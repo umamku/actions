@@ -91,7 +91,8 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 
 // TAMBAHKAN BARIS INI:
-const appId = "actions-v3";
+//const appId = "actions-v3";
+const appId = import.meta.env.VITE_APP_ID || "klien-demo";
 
 // --- CONSTANTS ---
 const DEFAULT_EMPLOYEES = [];

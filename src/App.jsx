@@ -96,9 +96,9 @@ const appId = import.meta.env.VITE_APP_ID || "klien-demo";
 
 // --- CONSTANTS ---
 const DEFAULT_EMPLOYEES = [];
-const DEFAULT_LOGO_URL = "https://i.imgur.com/NxrRMoF.png";
+const DEFAULT_LOGO_URL = "https://actions-mapeline.vercel.app/mapeline.png";
 // URL Default Google Sheet (Diperbarui sesuai permintaan)
-const DEFAULT_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbyfzDpt8F5DLWqvJ8VTf4uZy1Fsnig0RJipgJbRhx9eWOvdEL2qLAVAZQy9RGzDDKnoiw/exec";
+const DEFAULT_SCRIPT_URL = "";
 const DEFAULT_THEME_COLOR = "#059669"; 
 const TRIAL_UNLOCK_PASSWORD = "KodeRahasia123!"; 
 const LEGACY_PASSWORD = "Mapeline123!"; 
@@ -1227,11 +1227,13 @@ export default function App() {
                 const data = await response.json();
                 if (data && Object.keys(data).length > 0) {
                     const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
-                    await setDoc(settingsRef, {
-                        ...data,
-                        scriptUrl: DEFAULT_SCRIPT_URL, // Ensure script URL persists
-                        updatedAt: serverTimestamp()
-                    }, { merge: true });
+                    
+		//Dimatikan supaya tidak reset:
+			//await setDoc(settingsRef, {
+                        //...data,
+                        //scriptUrl: DEFAULT_SCRIPT_URL, // Ensure script URL persists
+                        //updatedAt: serverTimestamp()
+                    //}, { merge: true });
                 }
             } catch (e) {
                 console.warn("Initial config sync failed:", e);

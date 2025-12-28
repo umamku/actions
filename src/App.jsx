@@ -885,17 +885,17 @@ export default function App() {
       } catch(e) { console.error("Sheet sync error", e); }
   };
 
-  // --- SAVE CONFIG & SYNC TO SHEET ---
+  // --- SAVE CONFIG & SYNC TO SHEET (+ SEND REWARD TRIGGER) ---
   const handleSaveConfig = async () => {
       setActionLoading(true);
       try {
-          // 1. Simpan ke Firestore
+          // 1. Simpan ke Firestore Lokal
           const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
           await setDoc(configRef, { 
               scriptUrl: config.scriptUrl,
               logoUrl: config.logoUrl,
-              myReferralCode: config.myReferralCode, // Save referral code
-              referredBy: config.referredBy,         // Save referred by
+              myReferralCode: config.myReferralCode, 
+              referredBy: config.referredBy,         
               updatedAt: serverTimestamp() 
           }, { merge: true });
 
@@ -906,16 +906,43 @@ export default function App() {
                    logoUrl: config.logoUrl 
                };
                await fetchWithTimeout(config.scriptUrl, {
-                   method: 'POST',
-                   mode: 'no-cors',
-                   headers: { 'Content-Type': 'text/plain' },
+                   method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' },
                    body: JSON.stringify(payload)
                });
+          }
+
+          // --- LOGIC BARU: KIRIM REWARD SAAT INPUT KODE ---
+          // Pemicu: Admin menyimpan konfigurasi dan ada kode ReferredBy yang valid
+          if (config.referredBy && 
+              config.referredBy.length > 3 &&
+              config.referredBy !== config.myReferralCode // Anti Self-Referral
+          ) {
+             const rewardId = `${appId}_to_${config.referredBy}`;
+             const rewardRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', rewardId);
+             
+             // Cek apakah reward sudah pernah dikirim untuk kode ini?
+             const rewardSnap = await getDoc(rewardRef);
+             
+             if (!rewardSnap.exists()) {
+                 await setDoc(rewardRef, {
+                     targetCode: config.referredBy, // Tujuan (Upline)
+                     sourceAppId: appId,            // Dari (Kita)
+                     type: 'REFERRAL_ACTIVATION',   // Tipe Reward
+                     status: 'PENDING',             // Menunggu diambil
+                     createdAt: serverTimestamp()
+                 });
+                 // Tambahkan pesan khusus agar Admin tahu
+                 setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Reward Terkirim!' });
+                 setActionLoading(false);
+                 setTimeout(() => setMsg(null), 3000);
+                 return; // Keluar function agar tidak tertimpa msg bawah
+             }
           }
 
           setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
       } catch(e) {
           setMsg({ type: 'error', text: 'Gagal menyimpan konfigurasi.' });
+          console.error(e);
       } finally {
           setActionLoading(false);
           setTimeout(() => setMsg(null), 3000);
@@ -950,29 +977,9 @@ export default function App() {
                });
           }
 
-          // --- LOGIC BARU: KIRIM REWARD KE UPLINE ---
-          // Syarat: Langganan AKTIF, ada Upline, dan kode valid
-          if (config.subscriptionEnabled && config.referredBy && config.referredBy.length > 3) {
-             // Buat ID unik transaksi reward ini (AppIdKita_KodeUpline) agar tidak terkirim dobel
-             const rewardId = `${appId}_to_${config.referredBy}`;
-             const rewardRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', rewardId);
-             
-             // Cek apakah reward sudah pernah dikirim?
-             const rewardSnap = await getDoc(rewardRef);
-             
-             if (!rewardSnap.exists()) {
-                 await setDoc(rewardRef, {
-                     targetCode: config.referredBy, // Kode Toko Upline (Penerima)
-                     sourceAppId: appId,            // ID Kita (Pengirim)
-                     type: 'SUBSCRIPTION_BONUS',    // Tipe Reward
-                     status: 'PENDING',             // Status tunggu diklaim
-                     createdAt: serverTimestamp()
-                 });
-                 // Reward terkirim diam-diam ke sistem global
-             }
-          }
+          // (LOGIKA REWARD SUDAH DIPINDAH KE TAB KONEKSI)
 
-          setMsg({ type: 'success', text: 'Lisensi & Reward Diproses!' });
+          setMsg({ type: 'success', text: 'Pengaturan Lisensi Disimpan!' });
       } catch(e) {
           setMsg({ type: 'error', text: 'Gagal menyimpan konfigurasi.' });
           console.error(e);
@@ -1376,44 +1383,40 @@ export default function App() {
     };
   }, [user]);
 
-// --- BAGIAN 3: AUTO-CLAIM REWARD LISTENER (PENERIMA HADIAH) ---
+// --- BAGIAN 3: AUTO-CLAIM REWARD LISTENER (ANTI-DOUBLE CLAIM) ---
+  const processingRewards = useRef(new Set()); // Penyimpanan sementara ID yang sedang diproses
+
   useEffect(() => {
-    // Hanya jalan jika kita punya kode referral
     if (!config.myReferralCode) return;
 
-    // Dengar sinyal dari Global Rewards
     const rewardsRef = collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards');
     
     const unsubscribeRewards = onSnapshot(rewardsRef, async (snapshot) => {
         snapshot.docChanges().forEach(async (change) => {
-            if (change.type === 'added') {
+            // Hanya respon jika ada data BARU (added) atau PERUBAHAN (modified) yang statusnya PENDING
+            if ((change.type === 'added' || change.type === 'modified')) {
                 const data = change.doc.data();
                 const docId = change.doc.id;
 
-                // Cek: Apakah reward ini ditujukan untuk KODE SAYA? Dan statusnya PENDING?
-                if (data.targetCode === config.myReferralCode && data.status === 'PENDING') {
+                // CEK 1: Apakah reward untuk saya & status PENDING?
+                // CEK 2: Apakah reward ini sedang diproses oleh listener ini sebelumnya? (Anti-Race Condition)
+                if (data.targetCode === config.myReferralCode && 
+                    data.status === 'PENDING' && 
+                    !processingRewards.current.has(docId)) {
                     
-                    // 1. HITUNG TANGGAL BARU (+30 HARI)
+                    // Kunci proses ini
+                    processingRewards.current.add(docId);
+
+                    // 1. HITUNG TANGGAL (+30 HARI)
                     let currentEnd = new Date(config.subscriptionEndDate);
-                    // Jika tanggal invalid atau sudah lewat, mulai dari hari ini
                     if (isNaN(currentEnd.getTime()) || currentEnd < new Date()) {
                         currentEnd = new Date(); 
                     }
-                    // Tambah 30 Hari
                     currentEnd.setDate(currentEnd.getDate() + 30);
                     const newDateISO = currentEnd.toISOString().slice(0, 16);
 
-                    // 2. UPDATE LISENSI LOKAL (PERPANJANG MASA AKTIF)
                     try {
-                        const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
-                        // Kita aktifkan subscription dan update tanggalnya
-                        await updateDoc(settingsRef, {
-                            subscriptionEnabled: true,
-                            subscriptionEndDate: newDateISO,
-                            updatedAt: serverTimestamp()
-                        });
-
-                        // 3. TANDAI REWARD SUDAH DIKLAIM DI GLOBAL (Supaya tidak diklaim 2x)
+                        // 2. TANDAI CLAIMED DULUAN DI DATABASE (Supaya listener lain langsung berhenti)
                         const rewardDocRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', docId);
                         await updateDoc(rewardDocRef, {
                             status: 'CLAIMED',
@@ -1421,10 +1424,16 @@ export default function App() {
                             claimedByAppId: appId
                         });
 
-                        // 4. BERI NOTIFIKASI KE LAYAR
+                        // 3. BARU UPDATE LISENSI LOKAL
+                        const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
+                        await updateDoc(settingsRef, {
+                            subscriptionEnabled: true,
+                            subscriptionEndDate: newDateISO,
+                            updatedAt: serverTimestamp()
+                        });
+
                         setMsg({ type: 'success', text: `SELAMAT! Anda dapat bonus 1 Bulan dari Referral!` });
                         
-                        // Update state lokal biar UI berubah realtime
                         setConfig(prev => ({ 
                             ...prev, 
                             subscriptionEnabled: true,
@@ -1433,6 +1442,8 @@ export default function App() {
                         
                     } catch (err) {
                         console.error("Gagal klaim reward:", err);
+                        // Jika gagal, lepaskan kunci supaya bisa dicoba lagi
+                        processingRewards.current.delete(docId);
                     }
                 }
             }
@@ -1440,8 +1451,7 @@ export default function App() {
     });
 
     return () => unsubscribeRewards();
-  }, [config.myReferralCode, config.subscriptionEndDate]);
-
+  }, [config.myReferralCode, config.subscriptionEndDate]); // Dependency tetap
   useEffect(() => {
       setImageError(false);
   }, [config.logoUrl]);

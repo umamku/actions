@@ -469,6 +469,7 @@ export default function App() {
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
   const [proofInput, setProofInput] = useState(''); // Untuk Admin input bukti
   const [processingWdId, setProcessingWdId] = useState(null); // ID yg sedang di-ACC admin
+  const [wdHistory, setWdHistory] = useState([]); // <--- State untuk simpan riwayat
 
   const [user, setUser] = useState(null); 
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES); 
@@ -1474,6 +1475,26 @@ export default function App() {
       } catch(e) { setMsg({type:'error', text:'Gagal menolak.'}); }
       finally { setActionLoading(false); setTimeout(()=>setMsg(null),3000); }
   };
+
+// --- LOGIC: AMBIL RIWAYAT PENARIKAN MITRA ---
+  useEffect(() => {
+      let unsubscribeHistory = () => {};
+
+      if (view === 'affiliate_portal' && affiliateView === 'dashboard' && activeAffiliate) {
+          const q = query(
+              collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals'),
+              where('affiliateCode', '==', activeAffiliate.code)
+          );
+
+          unsubscribeHistory = onSnapshot(q, (snapshot) => {
+              const list = snapshot.docs.map(doc => ({id: doc.id, ...doc.data()}));
+              // Urutkan dari yang terbaru (Client side sort)
+              list.sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+              setWdHistory(list);
+          });
+      }
+      return () => unsubscribeHistory();
+  }, [view, affiliateView, activeAffiliate]);
 
 
   // --- EFFECTS ---
@@ -2790,6 +2811,48 @@ export default function App() {
                          </div>
                      </div>
 
+{/* --- FITUR BARU: TABEL RIWAYAT --- */}
+                     <div className="bg-white p-6 rounded-[2rem] border border-slate-100 text-left shadow-sm space-y-4">
+                         <h4 className="font-black text-slate-800 text-xs uppercase flex items-center gap-2">
+                             <History size={14} className="text-blue-500"/> Riwayat Penarikan
+                         </h4>
+                         
+                         {wdHistory.length === 0 ? (
+                             <p className="text-[10px] text-slate-400 italic text-center py-2">Belum ada riwayat penarikan.</p>
+                         ) : (
+                             <div className="space-y-3">
+                                 {wdHistory.map((item) => (
+                                     <div key={item.id} className="flex justify-between items-center border-b border-slate-50 pb-2 last:border-0">
+                                         <div>
+                                             <p className="text-xs font-black text-slate-700">Rp {item.amount.toLocaleString()}</p>
+                                             <p className="text-[9px] text-slate-400 font-bold">
+                                                 {item.createdAt?.seconds ? new Date(item.createdAt.seconds * 1000).toLocaleDateString('id-ID') : 'Baru saja'}
+                                             </p>
+                                         </div>
+                                         <div className="text-right">
+                                             <span className={`text-[9px] font-black px-2 py-1 rounded-lg ${
+                                                 item.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-600' :
+                                                 item.status === 'REJECTED' ? 'bg-red-100 text-red-600' :
+                                                 'bg-orange-100 text-orange-600'
+                                             }`}>
+                                                 {item.status === 'COMPLETED' ? 'SUKSES' : item.status === 'REJECTED' ? 'DITOLAK' : 'PROSES'}
+                                             </span>
+                                             
+                                             {/* TAMPILKAN BUKTI JIKA ADA */}
+                                             {item.status === 'COMPLETED' && item.proof && (
+                                                 <p className="text-[8px] font-bold text-blue-500 mt-1 cursor-pointer underline" onClick={() => {alert("Info Transfer: " + item.proof)}}>
+                                                     Lihat Bukti
+                                                 </p>
+                                             )}
+                                         </div>
+                                     </div>
+                                 ))}
+                             </div>
+                         )}
+                     </div>
+
+
+
                      <div className="bg-white p-6 rounded-[2rem] border border-slate-100 text-left shadow-sm">
                          <h4 className="font-black text-slate-800 text-xs uppercase mb-4 flex items-center gap-2"><Lightbulb size={14} className="text-yellow-500"/> Cara Dapat Cuan</h4>
                          <ul className="text-[10px] font-bold text-slate-500 space-y-3">
@@ -2812,6 +2875,8 @@ export default function App() {
                  </div>
              )}
 
+
+
 {/* MODAL PENARIKAN DANA */}
              {showWithdrawModal && (
                  <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
@@ -2823,10 +2888,10 @@ export default function App() {
                          </div>
 
                          <div className="space-y-4">
-                             <div>
+                           <div>
                                  <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Jumlah Penarikan</label>
                                  <div>
-    <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Jumlah Penarikan</label>
+
     
     <div className="relative">
         <span className="absolute left-4 top-1/2 -translate-y-1/2 font-black text-slate-400">Rp</span>

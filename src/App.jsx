@@ -18,7 +18,11 @@ import {
   updateDoc, 
   serverTimestamp, 
   deleteDoc,
-  increment
+  increment,
+  addDoc,    // <--- BARU
+  query,     // <--- BARU
+  where,     // <--- BARU
+  orderBy
 } from 'firebase/firestore';
 import { 
   CheckCircle, 
@@ -74,7 +78,8 @@ import {
   Database, 
   Trash,
   Gift, // New Icon
-  Copy  // New Icon
+  Copy,  // New Icon
+  Bell
 } from 'lucide-react';
 
 // --- KONFIGURASI FIREBASE ---
@@ -456,6 +461,14 @@ export default function App() {
   const [affiliateView, setAffiliateView] = useState('login');
   const [affData, setAffData] = useState({ name: '', phone: '', bank: '', code: '', pin: '' });
   const [activeAffiliate, setActiveAffiliate] = useState(null);
+
+// --- STATE TAMBAHAN UNTUK FITUR WITHDRAW ---
+  const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [showWithdrawModal, setShowWithdrawModal] = useState(false);
+  const [affGlobalConfig, setAffGlobalConfig] = useState({ minWd: 100000, adminWa: '' });
+  const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
+  const [proofInput, setProofInput] = useState(''); // Untuk Admin input bukti
+  const [processingWdId, setProcessingWdId] = useState(null); // ID yg sedang di-ACC admin
 
   const [user, setUser] = useState(null); 
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES); 
@@ -1311,6 +1324,158 @@ export default function App() {
       }
   };
 
+// ==========================================
+  // --- LOGIC BARU: WITHDRAWAL SYSTEM ---
+  // ==========================================
+
+  // 1. Load Pengaturan Mitra (Admin WA & Min WD) saat Admin Login
+  useEffect(() => {
+      if (view === 'config') {
+          const fetchAffConfig = async () => {
+              const ref = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings');
+              const snap = await getDoc(ref);
+              if (snap.exists()) setAffGlobalConfig(snap.data());
+              
+              // Ambil Request Pending
+              const q = query(collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals'), where('status', '==', 'PENDING'));
+              const wdSnap = await onSnapshot(q, (snapshot) => {
+                  const list = snapshot.docs.map(d => ({id: d.id, ...d.data()}));
+                  setPendingWithdrawals(list);
+              });
+              return () => wdSnap();
+          };
+          fetchAffConfig();
+      }
+  }, [view]);
+
+  // 2. Simpan Pengaturan Mitra (Oleh Admin)
+  const handleSaveAffiliateSettings = async () => {
+      setActionLoading(true);
+      try {
+          await setDoc(doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings'), affGlobalConfig);
+          setMsg({type:'success', text:'Pengaturan Mitra Disimpan!'});
+      } catch(e) { setMsg({type:'error', text:'Gagal simpan.'}); }
+      finally { setActionLoading(false); setTimeout(()=>setMsg(null),2000); }
+  };
+
+// --- HELPER: FORMAT ANGKA RIBUAN (UI ONLY) ---
+  const handleAmountChange = (val) => {
+      // 1. Hapus karakter selain angka
+      const rawValue = val.replace(/\D/g, '');
+      
+      // 2. Jika kosong, set kosong
+      if (rawValue === '') {
+          setWithdrawAmount('');
+          return;
+      }
+
+      // 3. Tambahkan titik setiap 3 digit
+      const formatted = parseInt(rawValue).toLocaleString('id-ID');
+      setWithdrawAmount(formatted);
+  };
+
+  // 3. Mitra Mengajukan Penarikan (REVISI)
+  const handleRequestWithdraw = async () => {
+      // A. Bersihkan format titik (100.000 -> 100000)
+      const rawString = withdrawAmount ? withdrawAmount.toString().replace(/\./g, '') : '0';
+      const amount = parseInt(rawString); 
+      
+      // B. Validasi Ketat
+      if (!amount || amount <= 0) { 
+          setMsg({type:'error', text:'Masukkan nominal yang benar.'}); 
+          setTimeout(() => setMsg(null), 3000); // Hilang dalam 3 detik
+          return; 
+      }
+      
+      if (amount < affGlobalConfig.minWd) { 
+          setMsg({type:'error', text:`Minimal penarikan Rp ${affGlobalConfig.minWd.toLocaleString()}`}); 
+          setTimeout(() => setMsg(null), 3000); 
+          return; 
+      }
+      
+      // C. Cek Saldo (Pesan Error Saldo Kurang)
+      if (amount > activeAffiliate.unpaidCommission) { 
+          setMsg({type:'error', text:'Saldo tidak mencukupi!'}); 
+          setTimeout(() => setMsg(null), 3000); // PENTING: Timer agar pesan hilang
+          return; 
+      }
+
+      setActionLoading(true);
+      try {
+          // 1. Kurangi Saldo Mitra
+          const affRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', activeAffiliate.code);
+          await updateDoc(affRef, {
+              unpaidCommission: increment(-amount)
+          });
+
+          // 2. Update Tampilan Lokal
+          setActiveAffiliate(prev => ({...prev, unpaidCommission: prev.unpaidCommission - amount}));
+
+          // 3. Buat Tiket Request
+          await addDoc(collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals'), {
+              affiliateCode: activeAffiliate.code,
+              affiliateName: activeAffiliate.name,
+              affiliateBank: activeAffiliate.bank,
+              amount: amount,
+              status: 'PENDING',
+              createdAt: serverTimestamp()
+          });
+
+          setMsg({type:'success', text:'Permintaan dikirim! Tunggu konfirmasi Admin.'});
+          setShowWithdrawModal(false);
+          setWithdrawAmount(''); // Reset input
+      } catch(e) {
+          setMsg({type:'error', text:'Gagal request.'});
+          console.error(e);
+      } finally { 
+          setActionLoading(false); 
+          setTimeout(()=>setMsg(null), 3000); 
+      }
+  };
+
+  // 4. Admin Menyetujui Transfer
+  const handleApproveWithdraw = async (wdItem) => {
+      if (!proofInput) { setMsg({type:'error', text:'Harap isi bukti transfer (Link/Ket)'}); return; }
+      
+      if(!window.confirm(`Konfirmasi transfer Rp ${wdItem.amount.toLocaleString()} ke ${wdItem.affiliateName}?`)) return;
+
+      setActionLoading(true);
+      try {
+          // Update Status Tiket
+          const wdRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals', wdItem.id);
+          await updateDoc(wdRef, {
+              status: 'COMPLETED',
+              proof: proofInput,
+              approvedAt: serverTimestamp()
+          });
+
+          setMsg({type:'success', text:'Penarikan Dikonfirmasi!'});
+          setProcessingWdId(null);
+          setProofInput('');
+      } catch(e) { setMsg({type:'error', text:'Gagal konfirmasi.'}); }
+      finally { setActionLoading(false); setTimeout(()=>setMsg(null),3000); }
+  };
+
+  // 5. Admin Menolak (Refund Saldo)
+  const handleRejectWithdraw = async (wdItem) => {
+      if(!window.confirm("Tolak permintaan ini dan kembalikan saldo ke mitra?")) return;
+      
+      setActionLoading(true);
+      try {
+          // Refund Saldo
+          const affRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', wdItem.affiliateCode);
+          await updateDoc(affRef, { unpaidCommission: increment(wdItem.amount) });
+
+          // Update Status Tiket
+          const wdRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals', wdItem.id);
+          await updateDoc(wdRef, { status: 'REJECTED', approvedAt: serverTimestamp() });
+
+          setMsg({type:'success', text:'Permintaan Ditolak & Saldo Direfund.'});
+      } catch(e) { setMsg({type:'error', text:'Gagal menolak.'}); }
+      finally { setActionLoading(false); setTimeout(()=>setMsg(null),3000); }
+  };
+
+
   // --- EFFECTS ---
 
   useEffect(() => {
@@ -2069,7 +2234,7 @@ export default function App() {
                     )}
                 </div>
             </div>
-            <div className="flex bg-slate-200 p-1 rounded-2xl gap-1 overflow-x-auto leading-none"><button onClick={() => setConfigTab('settings')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'settings' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'settings' ? { color: themeColor } : {}}>Koneksi</button><button onClick={() => setConfigTab('reports')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'reports' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'reports' ? { color: themeColor } : {}}>Tim</button><button onClick={() => setConfigTab('users')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'users' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'users' ? { color: themeColor } : {}}>User</button><button onClick={() => setConfigTab('license')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'license' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'license' ? { color: themeColor } : {}}>Lisensi</button></div>
+            <div className="flex bg-slate-200 p-1 rounded-2xl gap-1 overflow-x-auto leading-none"><button onClick={() => setConfigTab('settings')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'settings' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'settings' ? { color: themeColor } : {}}>Koneksi</button><button onClick={() => setConfigTab('reports')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'reports' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'reports' ? { color: themeColor } : {}}>Tim</button><button onClick={() => setConfigTab('users')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'users' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'users' ? { color: themeColor } : {}}>User</button><button onClick={() => setConfigTab('license')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'license' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'license' ? { color: themeColor } : {}}>Lisensi</button> <button onClick={() => setConfigTab('affiliates')} className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'affiliates' ? 'bg-white shadow-sm' : 'text-slate-500'}`} style={configTab === 'affiliates' ? { color: themeColor } : {}}>Mitra</button> </div>
             
             <div className="space-y-6">
               {configTab === 'settings' && (
@@ -2454,6 +2619,75 @@ export default function App() {
                       )}
                   </div>
               )}
+
+{/* --- TAB ADMIN: MANAJEMEN MITRA --- */}
+              {configTab === 'affiliates' && (
+                  <div className="space-y-6 animate-in fade-in text-left">
+                      
+                      {/* Pengaturan Dasar */}
+                      <div className="bg-white p-6 rounded-[2.5rem] shadow-lg border border-slate-100 space-y-4">
+                          <h3 className="font-black text-slate-900 text-sm uppercase flex items-center gap-2">
+                              <Settings className="w-4 h-4"/> Pengaturan Program
+                          </h3>
+                          <div>
+                              <label className="text-[10px] font-bold text-slate-400 uppercase">Minimal Penarikan (Rp)</label>
+                              <input type="number" className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none" value={affGlobalConfig.minWd} onChange={e=>setAffGlobalConfig({...affGlobalConfig, minWd: parseInt(e.target.value)})} />
+                          </div>
+                          <div>
+                              <label className="text-[10px] font-bold text-slate-400 uppercase">No. WA Admin (Untuk Tanya Jawab)</label>
+                              <input type="text" className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none" placeholder="628..." value={affGlobalConfig.adminWa} onChange={e=>setAffGlobalConfig({...affGlobalConfig, adminWa: e.target.value})} />
+                          </div>
+                          <button onClick={handleSaveAffiliateSettings} disabled={actionLoading} className="w-full py-3 bg-slate-900 text-white rounded-xl font-black text-xs uppercase shadow-lg active:scale-95 transition-all">Simpan Pengaturan</button>
+                      </div>
+
+                      {/* Daftar Permintaan Penarikan */}
+                      <div className="space-y-3">
+                          <h3 className="font-black text-slate-900 text-sm uppercase px-2 flex items-center gap-2">
+                              <Bell className="w-4 h-4 text-red-500"/> Permintaan Penarikan ({pendingWithdrawals.length})
+                          </h3>
+                          
+                          {pendingWithdrawals.length === 0 ? (
+                              <div className="p-8 text-center text-slate-400 text-xs font-bold bg-slate-50 rounded-[2rem] border border-dashed border-slate-200">Tidak ada permintaan pending.</div>
+                          ) : (
+                              pendingWithdrawals.map(wd => (
+                                  <div key={wd.id} className="bg-white p-5 rounded-[2rem] shadow-md border border-slate-100 relative overflow-hidden">
+                                      <div className="flex justify-between items-start mb-3">
+                                          <div>
+                                              <p className="text-xs font-black text-slate-800">{wd.affiliateName}</p>
+                                              <p className="text-[10px] font-mono text-slate-400">{wd.affiliateCode}</p>
+                                          </div>
+                                          <div className="text-right">
+                                              <p className="text-lg font-black text-emerald-600">Rp {wd.amount.toLocaleString()}</p>
+                                              <p className="text-[9px] font-bold text-slate-400">{new Date(wd.createdAt?.seconds * 1000).toLocaleDateString()}</p>
+                                          </div>
+                                      </div>
+                                      
+                                      <div className="bg-slate-50 p-3 rounded-xl mb-4 border border-slate-100">
+                                          <p className="text-[10px] font-bold text-slate-500 uppercase mb-1">Info Transfer:</p>
+                                          <p className="text-xs font-bold text-slate-800">{wd.affiliateBank}</p>
+                                      </div>
+
+                                      {processingWdId === wd.id ? (
+                                          <div className="space-y-2 animate-in fade-in">
+                                              <input type="text" placeholder="Link Bukti / No Ref Transfer..." className="w-full p-3 border-2 border-emerald-100 rounded-xl text-xs outline-none focus:border-emerald-500" value={proofInput} onChange={e=>setProofInput(e.target.value)} autoFocus/>
+                                              <div className="flex gap-2">
+                                                  <button onClick={()=>setProcessingWdId(null)} className="flex-1 py-2 bg-slate-100 text-slate-500 rounded-lg text-[10px] font-black uppercase">Batal</button>
+                                                  <button onClick={()=>handleApproveWithdraw(wd)} disabled={actionLoading} className="flex-1 py-2 bg-emerald-600 text-white rounded-lg text-[10px] font-black uppercase shadow-lg">Kirim & Konfirmasi</button>
+                                              </div>
+                                          </div>
+                                      ) : (
+                                          <div className="flex gap-2">
+                                              <button onClick={()=>handleRejectWithdraw(wd)} disabled={actionLoading} className="flex-1 py-3 bg-red-50 text-red-500 hover:bg-red-100 rounded-xl text-[10px] font-black uppercase transition-colors">Tolak & Refund</button>
+                                              <button onClick={()=>setProcessingWdId(wd.id)} disabled={actionLoading} className="flex-[2] py-3 bg-slate-900 text-white hover:bg-emerald-600 rounded-xl text-[10px] font-black uppercase shadow-lg transition-colors">Proses Transfer</button>
+                                          </div>
+                                      )}
+                                  </div>
+                              ))
+                          )}
+                      </div>
+                  </div>
+              )}
+
             </div>
           </div>
         )}
@@ -2477,9 +2711,28 @@ export default function App() {
                         <p className="text-xs font-bold text-slate-400">Masuk untuk cek komisi Anda</p>
                      </div>
                      <div className="bg-white p-6 rounded-[2rem] shadow-xl border border-slate-100 space-y-4">
-                         <input className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none uppercase border-2 border-transparent focus:border-emerald-500 transition-all" placeholder="Kode Mitra (Contoh: MKT-1234)" value={affData.code} onChange={e=>setAffData({...affData, code:e.target.value})} />
-                         <input type="password" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none border-2 border-transparent focus:border-emerald-500 transition-all" placeholder="PIN Akses" value={affData.pin} onChange={e=>setAffData({...affData, pin:e.target.value})} />
-                         <button onClick={handleAffiliateLogin} disabled={actionLoading} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black shadow-lg active:scale-95 transition-all">MASUK DASHBOARD</button>
+                         {/* Input Kode Mitra */}
+                         <input 
+                            className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none uppercase border-2 border-transparent focus:border-emerald-500 transition-all" 
+                            placeholder="Kode Mitra (Contoh: MKT-1234)" 
+                            value={affData.code} 
+                            onChange={e=>setAffData({...affData, code:e.target.value})} 
+                            onKeyPress={(e) => e.key === 'Enter' && handleAffiliateLogin()} // <--- TAMBAHAN 1
+                         />
+                         
+                         {/* Input PIN */}
+                         <input 
+                            type="password" 
+                            className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none border-2 border-transparent focus:border-emerald-500 transition-all" 
+                            placeholder="PIN Akses" 
+                            value={affData.pin} 
+                            onChange={e=>setAffData({...affData, pin:e.target.value})} 
+                            onKeyPress={(e) => e.key === 'Enter' && handleAffiliateLogin()} // <--- TAMBAHAN 2
+                         />
+                         
+                         <button onClick={handleAffiliateLogin} disabled={actionLoading} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black shadow-lg active:scale-95 transition-all">
+                            {actionLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto"/> : "MASUK DASHBOARD"}
+                         </button>
                      </div>
                      <p className="text-center text-xs font-bold text-slate-400">Belum terdaftar? <span onClick={()=>setAffiliateView('register')} className="text-emerald-600 underline cursor-pointer hover:text-emerald-500">Daftar Jadi Mitra</span></p>
                  </div>
@@ -2531,7 +2784,7 @@ export default function App() {
                              <p className="text-3xl font-black text-slate-800 mb-1">{activeAffiliate.totalReferrals}</p>
                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Total Klien</p>
                          </div>
-                         <div className="bg-white p-5 rounded-[2rem] shadow-lg border border-slate-100 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-50 transition-colors" onClick={()=>window.open(`https://wa.me/6281234567890?text=Halo Admin, saya mitra ${activeAffiliate.code} ingin withdraw komisi Rp ${activeAffiliate.unpaidCommission}`, '_blank')}>
+                         <div className="bg-white p-5 rounded-[2rem] shadow-lg border border-slate-100 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-50 transition-colors" onClick={() => setShowWithdrawModal(true)}>
                              <CreditCard className="w-6 h-6 text-emerald-600 mb-2"/>
                              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cairkan Dana</p>
                          </div>
@@ -2558,6 +2811,68 @@ export default function App() {
                      <button onClick={()=>{setActiveAffiliate(null); setAffiliateView('login'); window.location.href = window.location.pathname;}} className="text-xs font-black text-red-400 py-4 hover:text-red-600 transition-colors">Keluar & Kembali ke App Utama</button>
                  </div>
              )}
+
+{/* MODAL PENARIKAN DANA */}
+             {showWithdrawModal && (
+                 <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in">
+                     <div className="bg-white w-full max-w-sm p-6 rounded-[2.5rem] shadow-2xl space-y-6 animate-in zoom-in-95">
+                         <div className="text-center">
+                             <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4"><CreditCard size={32}/></div>
+                             <h3 className="text-xl font-black text-slate-900">Tarik Komisi</h3>
+                             <p className="text-xs font-bold text-slate-400">Saldo Tersedia: Rp {activeAffiliate.unpaidCommission?.toLocaleString()}</p>
+                         </div>
+
+                         <div className="space-y-4">
+                             <div>
+                                 <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Jumlah Penarikan</label>
+                                 <div>
+    <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Jumlah Penarikan</label>
+    
+    <div className="relative">
+        <span className="absolute left-4 top-1/2 -translate-y-1/2 font-black text-slate-400">Rp</span>
+        <input 
+            type="text" // Ganti jadi text agar bisa nampung titik
+            inputMode="numeric" // Agar di HP muncul keyboard angka
+            className="w-full p-4 pl-10 bg-slate-50 border-2 border-slate-100 rounded-2xl font-black text-slate-800 outline-none focus:border-blue-500 transition-all text-lg" 
+            placeholder="0" 
+            value={withdrawAmount} 
+            onChange={e => handleAmountChange(e.target.value)} // Panggil helper function
+        />
+    </div>
+    
+    <div className="flex justify-between items-center mt-1 ml-2 mr-2">
+        <p className="text-[10px] font-bold text-slate-400">
+            Min: Rp {affGlobalConfig.minWd?.toLocaleString()}
+        </p>
+        {/* Helper visual saldo kurang/cukup */}
+        {(() => {
+             const rawVal = withdrawAmount ? parseInt(withdrawAmount.replace(/\./g, '')) : 0;
+             if (rawVal > activeAffiliate.unpaidCommission) {
+                 return <span className="text-[10px] font-black text-red-500 animate-pulse">Saldo Kurang!</span>
+             }
+             return null;
+        })()}
+    </div>
+</div>
+                                 <p className="text-[10px] font-bold text-orange-500 mt-1 ml-2">*Minimal Rp {affGlobalConfig.minWd?.toLocaleString()}</p>
+                             </div>
+                             
+                             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-100">
+                                 <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">Rekening Tujuan:</p>
+                                 <p className="text-sm font-black text-slate-800">{activeAffiliate.bank}</p>
+                             </div>
+                         </div>
+
+                         <div className="flex gap-3">
+                             <button onClick={()=>setShowWithdrawModal(false)} className="flex-1 py-4 bg-slate-100 text-slate-500 rounded-2xl font-black text-xs uppercase">Batal</button>
+                             <button onClick={handleRequestWithdraw} disabled={actionLoading} className="flex-[2] py-4 bg-blue-600 text-white rounded-2xl font-black text-xs uppercase shadow-xl active:scale-95 transition-all">
+                                 {actionLoading ? <Loader2 className="w-4 h-4 animate-spin mx-auto"/> : "Ajukan Sekarang"}
+                             </button>
+                         </div>
+                     </div>
+                 </div>
+             )}
+
           </div>
         )}
 

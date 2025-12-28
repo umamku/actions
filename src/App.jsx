@@ -904,26 +904,32 @@ export default function App() {
       } catch(e) { console.error("Sheet sync error", e); }
   };
 
-  // --- SAVE CONFIG & SYNC TO SHEET (+ HYBRID REWARD LOGIC) ---
+  // --- SAVE CONFIG & SYNC TO SHEET (FIXED: ANTI-SPAM REWARD) ---
   const handleSaveConfig = async () => {
       setActionLoading(true);
       try {
-          // 1. Simpan ke Firestore (Config Lokal)
-          const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
-          await setDoc(configRef, { 
+          // 1. Define Reference
+          const settingsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
+          
+          // 2. Cek Status Dulu (Apakah sudah pernah claim reward sebelumnya?)
+          const settingsSnap = await getDoc(settingsRef);
+          const alreadyClaimed = settingsSnap.exists() && settingsSnap.data().referralRewardClaimed;
+
+          // 3. Simpan Data Dasar (URL, Logo, dll)
+          // Kita simpan referredBy juga, tapi belum tentu trigger reward
+          const updateData = { 
               scriptUrl: config.scriptUrl,
               logoUrl: config.logoUrl,
               myReferralCode: config.myReferralCode, 
               referredBy: config.referredBy,         
               updatedAt: serverTimestamp() 
-          }, { merge: true });
+          };
+          
+          await setDoc(settingsRef, updateData, { merge: true });
 
-          // 2. Simpan ke Google Sheet (Config Tab)
+          // 4. Sync ke Google Sheet
           if (config.scriptUrl) {
-               const payload = { 
-                   action: 'update_config', 
-                   logoUrl: config.logoUrl 
-               };
+               const payload = { action: 'update_config', logoUrl: config.logoUrl };
                await fetchWithTimeout(config.scriptUrl, {
                    method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' },
                    body: JSON.stringify(payload)
@@ -931,27 +937,31 @@ export default function App() {
           }
 
           // ============================================================
-          // --- LOGIC HYBRID: KIRIM REWARD (USER VS FREELANCER) ---
+          // --- LOGIC REWARD (HANYA JIKA BELUM PERNAH CLAIM) ---
           // ============================================================
           if (config.referredBy && 
               config.referredBy.length > 3 &&
-              config.referredBy !== config.myReferralCode 
+              config.referredBy !== config.myReferralCode &&
+              !alreadyClaimed // <--- KUNCI PENGAMAN: Cek apakah sudah pernah?
           ) {
-             // 1. Cek Apakah Ini Kode Freelancer? (Cari di folder affiliates)
              const affiliateRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', config.referredBy);
              const affiliateSnap = await getDoc(affiliateRef);
 
              if (affiliateSnap.exists()) {
-                 // KASUS A: INI FREELANCER -> Tambah Saldo Komisi
-                 // Menggunakan increment agar aman (tidak perlu baca saldo lama dulu)
+                 // KASUS A: INI FREELANCER (MITRA)
+                 // Tambah saldo mitra
                  await updateDoc(affiliateRef, {
                      totalReferrals: increment(1),
-                     unpaidCommission: increment(50000), // CONTOH: Komisi Rp 50.000 per klien
+                     unpaidCommission: increment(50000), 
                      lastReferralAt: serverTimestamp()
                  });
+                 
+                 // TANDAI BAHWA TOKO INI SUDAH MEMBERI REWARD (Supaya tidak bisa double)
+                 await updateDoc(settingsRef, { referralRewardClaimed: true });
+
                  setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Komisi Mitra Tercatat!' });
              } else {
-                 // KASUS B: INI USER APLIKASI -> Kirim Reward Perpanjangan (Sistem Lama)
+                 // KASUS B: USER APLIKASI LAIN (Sesama Toko)
                  const rewardId = `${appId}_to_${config.referredBy}`;
                  const rewardRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', rewardId);
                  const rewardSnap = await getDoc(rewardRef);
@@ -964,20 +974,25 @@ export default function App() {
                          status: 'PENDING',
                          createdAt: serverTimestamp()
                      });
+                     
+                     // TANDAI SUDAH CLAIM
+                     await updateDoc(settingsRef, { referralRewardClaimed: true });
+                     
                      setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Reward Terkirim!' });
                  } else {
-                     setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
+                     setMsg({ type: 'success', text: 'Konfigurasi Disimpan (Reward sudah pernah dikirim).' });
                  }
              }
-             
-             // Selesai, matikan loading dan keluar fungsi
-             setActionLoading(false);
-             setTimeout(() => setMsg(null), 3000);
-             return; 
+          } else {
+             // Jika sudah pernah claim atau tidak ada kode
+             if (alreadyClaimed && config.referredBy) {
+                 setMsg({ type: 'success', text: 'Konfigurasi Disimpan (Kode Referral sudah terpakai).' });
+             } else {
+                 setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
+             }
           }
           // ============================================================
 
-          setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
       } catch(e) {
           setMsg({ type: 'error', text: 'Gagal menyimpan konfigurasi.' });
           console.error(e);

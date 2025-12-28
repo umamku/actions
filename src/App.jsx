@@ -1843,48 +1843,83 @@ export default function App() {
             
             <div className="space-y-6">
               {configTab === 'settings' && (
-                <div className="space-y-6 animate-in fade-in leading-none">
-                  <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4 text-left leading-none">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-2">Logo URL (Gambar)</label>
-                    <div className="flex gap-2 mb-4">
-                        <input type="text" className="flex-1 p-5 border-2 border-slate-50 rounded-2xl text-[11px] font-mono bg-slate-50 outline-none theme-focus" value={config.logoUrl} onChange={(e) => setConfig({...config, logoUrl: e.target.value})} placeholder="https://..." />
-                        <button onClick={handleSaveConfig} disabled={actionLoading} className="text-white p-5 rounded-2xl shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>
-                             {actionLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>}
-                        </button>
-                    </div>
+  <div className="space-y-6 animate-in fade-in leading-none">
 
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-2">Google Script URL</label>
-                    <div className="flex gap-2">
-                        <input type="text" className="flex-1 p-5 border-2 border-slate-50 rounded-2xl text-[11px] font-mono bg-slate-50 outline-none theme-focus" value={config.scriptUrl} onChange={(e) => setConfig({...config, scriptUrl: e.target.value})} />
-                        <button onClick={handleSaveConfig} disabled={actionLoading} className="text-white p-5 rounded-2xl shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>
-                             {actionLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>}
-                        </button>
-                    </div>
-                  </div>
-                  
-                  {/* GAS SCRIPT PROTECTION */}
-                  {!scriptUnlocked ? (
-                       <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 text-center space-y-4">
-                           <div className="w-12 h-12 bg-slate-100 text-slate-400 rounded-xl flex items-center justify-center mx-auto">
-                               <Lock className="w-6 h-6" />
-                           </div>
-                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Script Terproteksi</p>
-                           <div className="relative">
-                               <input type="password" placeholder="" className="w-full p-4 border-2 border-slate-100 rounded-2xl outline-none text-center font-black tracking-[0.2em] theme-focus text-xs" value={scriptPassInput} onChange={(e) => setScriptPassInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleUnlockScript()} />
-                           </div>
-                           <button onClick={handleUnlockScript} className="w-full text-white py-4 rounded-2xl font-black text-[10px] uppercase shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>Buka Script</button>
-                       </div>
-                  ) : (
-                      <div className="bg-slate-900 p-6 rounded-[2rem] shadow-2xl text-left overflow-hidden relative animate-in fade-in">
-                        <div className="flex justify-between items-center mb-4">
-                            <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">Deploy Script Code</span>
-                            <button onClick={() => { codeTextAreaRef.current.select(); document.execCommand('copy'); setMsg({type:'success', text:'Kode disalin!'}); setTimeout(() => setMsg(null), 3000); }} className="text-[9px] font-black hover:text-white transition-colors leading-none" style={{ color: themeColor }}>SALIN</button>
-                        </div>
-                        <textarea readOnly ref={codeTextAreaRef} value={GAS_SCRIPT_CODE} className="w-full h-32 bg-transparent text-[10px] font-mono text-slate-400 border-none outline-none resize-none leading-relaxed" />
-                      </div>
-                  )}
-                </div>
-              )}
+    {/* 1. BAGIAN LOGO (TETAP DI LUAR / TIDAK DIPROTEKSI) */}
+    <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4 text-left leading-none">
+      <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-2">Logo URL (Gambar)</label>
+      <div className="flex gap-2">
+        <input 
+            type="text" 
+            className="flex-1 p-5 border-2 border-slate-50 rounded-2xl text-[11px] font-mono bg-slate-50 outline-none theme-focus" 
+            value={config.logoUrl} 
+            onChange={(e) => setConfig({...config, logoUrl: e.target.value})} 
+            placeholder="/logo.png" 
+        />
+        <button onClick={handleSaveConfig} disabled={actionLoading} className="text-white p-5 rounded-2xl shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>
+            {actionLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>}
+        </button>
+      </div>
+    </div>
+
+    {/* 2. PROTEKSI SCRIPT & URL */}
+    {!scriptUnlocked ? (
+      /* --- TAMPILAN TERKUNCI --- */
+      <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 text-center space-y-4">
+          <div className="w-12 h-12 bg-slate-100 text-slate-400 rounded-xl flex items-center justify-center mx-auto">
+              <Lock className="w-6 h-6" />
+          </div>
+          <div className="space-y-1">
+            <h3 className="text-sm font-black text-slate-900 uppercase">Koneksi Database</h3>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Masukkan Kode Admin untuk Edit URL</p>
+          </div>
+          <div className="relative">
+              <input 
+                type="password" 
+                placeholder="******" 
+                className="w-full p-4 border-2 border-slate-100 rounded-2xl outline-none text-center font-black tracking-[0.2em] theme-focus text-xs" 
+                value={scriptPassInput} 
+                onChange={(e) => setScriptPassInput(e.target.value)} 
+                onKeyPress={(e) => e.key === 'Enter' && handleUnlockScript()} 
+              />
+          </div>
+          <button onClick={handleUnlockScript} className="w-full text-white py-4 rounded-2xl font-black text-[10px] uppercase shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>Buka Pengaturan</button>
+      </div>
+    ) : (
+      /* --- TAMPILAN TERBUKA (URL + KODE MUNCUL BERSAMAAN) --- */
+      <div className="space-y-6 animate-in slide-in-from-bottom-4">
+        
+        {/* A. INPUT URL GOOGLE SHEET (PINDAH KE SINI) */}
+        {/* Tombol Save tetap berfungsi normal di sini */}
+        <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4 text-left leading-none">
+           <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-2">Google Script URL (Web App)</label>
+           <div className="flex gap-2">
+               <input 
+                  type="text" 
+                  className="flex-1 p-5 border-2 border-slate-50 rounded-2xl text-[11px] font-mono bg-slate-50 outline-none theme-focus" 
+                  value={config.scriptUrl} 
+                  onChange={(e) => setConfig({...config, scriptUrl: e.target.value})} 
+                  placeholder="https://script.google.com/..."
+               />
+               <button onClick={handleSaveConfig} disabled={actionLoading} className="text-white p-5 rounded-2xl shadow-lg active:scale-95 transition-all" style={{ backgroundColor: themeColor }}>
+                   {actionLoading ? <Loader2 className="w-4 h-4 animate-spin"/> : <Save className="w-4 h-4"/>}
+               </button>
+           </div>
+        </div>
+
+        {/* B. CODE VIEWER (TETAP DI SINI) */}
+        <div className="bg-slate-900 p-6 rounded-[2rem] shadow-2xl text-left overflow-hidden relative">
+          <div className="flex justify-between items-center mb-4">
+              <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">Deploy Script Code</span>
+              <button onClick={() => { codeTextAreaRef.current.select(); document.execCommand('copy'); setMsg({type:'success', text:'Kode disalin!'}); setTimeout(() => setMsg(null), 3000); }} className="text-[9px] font-black hover:text-white transition-colors leading-none" style={{ color: themeColor }}>SALIN</button>
+          </div>
+          <textarea readOnly ref={codeTextAreaRef} value={GAS_SCRIPT_CODE} className="w-full h-32 bg-transparent text-[10px] font-mono text-slate-400 border-none outline-none resize-none leading-relaxed" />
+        </div>
+
+      </div>
+    )}
+  </div>
+)}
 
               {configTab === 'reports' && (
                 <div className="space-y-6 animate-in fade-in leading-none">

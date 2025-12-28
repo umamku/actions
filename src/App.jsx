@@ -17,7 +17,8 @@ import {
   onSnapshot, 
   updateDoc, 
   serverTimestamp, 
-  deleteDoc 
+  deleteDoc,
+  increment
 } from 'firebase/firestore';
 import { 
   CheckCircle, 
@@ -452,6 +453,10 @@ function createJsonResponse(obj) {
 
 export default function App() {
   // --- STATE ---
+  const [affiliateView, setAffiliateView] = useState('login');
+  const [affData, setAffData] = useState({ name: '', phone: '', bank: '', code: '', pin: '' });
+  const [activeAffiliate, setActiveAffiliate] = useState(null);
+
   const [user, setUser] = useState(null); 
   const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES); 
   const [selectedEmployee, setSelectedEmployee] = useState(null); 
@@ -885,11 +890,11 @@ export default function App() {
       } catch(e) { console.error("Sheet sync error", e); }
   };
 
-  // --- SAVE CONFIG & SYNC TO SHEET (+ SEND REWARD TRIGGER) ---
+  // --- SAVE CONFIG & SYNC TO SHEET (+ HYBRID REWARD LOGIC) ---
   const handleSaveConfig = async () => {
       setActionLoading(true);
       try {
-          // 1. Simpan ke Firestore Lokal
+          // 1. Simpan ke Firestore (Config Lokal)
           const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'settings');
           await setDoc(configRef, { 
               scriptUrl: config.scriptUrl,
@@ -911,33 +916,52 @@ export default function App() {
                });
           }
 
-          // --- LOGIC BARU: KIRIM REWARD SAAT INPUT KODE ---
-          // Pemicu: Admin menyimpan konfigurasi dan ada kode ReferredBy yang valid
+          // ============================================================
+          // --- LOGIC HYBRID: KIRIM REWARD (USER VS FREELANCER) ---
+          // ============================================================
           if (config.referredBy && 
               config.referredBy.length > 3 &&
-              config.referredBy !== config.myReferralCode // Anti Self-Referral
+              config.referredBy !== config.myReferralCode 
           ) {
-             const rewardId = `${appId}_to_${config.referredBy}`;
-             const rewardRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', rewardId);
-             
-             // Cek apakah reward sudah pernah dikirim untuk kode ini?
-             const rewardSnap = await getDoc(rewardRef);
-             
-             if (!rewardSnap.exists()) {
-                 await setDoc(rewardRef, {
-                     targetCode: config.referredBy, // Tujuan (Upline)
-                     sourceAppId: appId,            // Dari (Kita)
-                     type: 'REFERRAL_ACTIVATION',   // Tipe Reward
-                     status: 'PENDING',             // Menunggu diambil
-                     createdAt: serverTimestamp()
+             // 1. Cek Apakah Ini Kode Freelancer? (Cari di folder affiliates)
+             const affiliateRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', config.referredBy);
+             const affiliateSnap = await getDoc(affiliateRef);
+
+             if (affiliateSnap.exists()) {
+                 // KASUS A: INI FREELANCER -> Tambah Saldo Komisi
+                 // Menggunakan increment agar aman (tidak perlu baca saldo lama dulu)
+                 await updateDoc(affiliateRef, {
+                     totalReferrals: increment(1),
+                     unpaidCommission: increment(50000), // CONTOH: Komisi Rp 50.000 per klien
+                     lastReferralAt: serverTimestamp()
                  });
-                 // Tambahkan pesan khusus agar Admin tahu
-                 setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Reward Terkirim!' });
-                 setActionLoading(false);
-                 setTimeout(() => setMsg(null), 3000);
-                 return; // Keluar function agar tidak tertimpa msg bawah
+                 setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Komisi Mitra Tercatat!' });
+             } else {
+                 // KASUS B: INI USER APLIKASI -> Kirim Reward Perpanjangan (Sistem Lama)
+                 const rewardId = `${appId}_to_${config.referredBy}`;
+                 const rewardRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'pending_rewards', rewardId);
+                 const rewardSnap = await getDoc(rewardRef);
+                 
+                 if (!rewardSnap.exists()) {
+                     await setDoc(rewardRef, {
+                         targetCode: config.referredBy,
+                         sourceAppId: appId,
+                         type: 'REFERRAL_ACTIVATION',
+                         status: 'PENDING',
+                         createdAt: serverTimestamp()
+                     });
+                     setMsg({ type: 'success', text: 'Konfigurasi Disimpan & Reward Terkirim!' });
+                 } else {
+                     setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
+                 }
              }
+             
+             // Selesai, matikan loading dan keluar fungsi
+             setActionLoading(false);
+             setTimeout(() => setMsg(null), 3000);
+             return; 
           }
+          // ============================================================
 
           setMsg({ type: 'success', text: 'Konfigurasi Disimpan!' });
       } catch(e) {
@@ -1218,6 +1242,75 @@ export default function App() {
     finally { setActionLoading(false); setTimeout(() => setMsg(null), 3000); }
   };
 
+// ==========================================
+  // --- LOGIC PORTAL MITRA (AFFILIATE) ---
+  // ==========================================
+
+  const handleAffiliateRegister = async () => {
+      if (!affData.name || !affData.phone || !affData.pin) { 
+          setMsg({type:'error', text:'Mohon lengkapi data!'}); 
+          return; 
+      }
+      setActionLoading(true);
+      try {
+          // Generate Kode Unik: MKT + 4 Angka Acak
+          const newCode = 'MKT-' + Math.floor(1000 + Math.random() * 9000); 
+          const affiliateRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', newCode);
+          
+          // Simpan Data Mitra
+          await setDoc(affiliateRef, {
+              code: newCode,
+              name: affData.name,
+              phone: affData.phone,
+              bank: affData.bank,
+              pin: affData.pin, 
+              totalReferrals: 0,
+              unpaidCommission: 0,
+              createdAt: serverTimestamp()
+          });
+          
+          // Daftarkan kode ke registry global agar bisa dideteksi sistem reward
+          const globalRegRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'referral_codes', newCode);
+          await setDoc(globalRegRef, { ownerType: 'AFFILIATE', updatedAt: serverTimestamp() });
+
+          setAffData({...affData, code: newCode});
+          setMsg({type:'success', text: `Pendaftaran Sukses! Kode: ${newCode}`});
+          
+          // Kembali ke login agar mereka bisa mencoba masuk
+          setAffiliateView('login');
+      } catch(e) { 
+          setMsg({type:'error', text:'Gagal mendaftar.'}); 
+          console.error(e);
+      }
+      finally { 
+          setActionLoading(false); 
+          setTimeout(()=>setMsg(null),3000); 
+      }
+  };
+
+  const handleAffiliateLogin = async () => {
+      if (!affData.code || !affData.pin) return;
+      setActionLoading(true);
+      try {
+          const ref = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', affData.code.toUpperCase());
+          const snap = await getDoc(ref);
+          
+          if (snap.exists() && snap.data().pin === affData.pin) {
+              setActiveAffiliate(snap.data());
+              setAffiliateView('dashboard');
+              setMsg({type:'success', text: 'Login Berhasil!'});
+          } else {
+              setMsg({type:'error', text:'Kode Mitra atau PIN salah.'});
+          }
+      } catch(e) { 
+          setMsg({type:'error', text:'Login error.'}); 
+      }
+      finally { 
+          setActionLoading(false); 
+          setTimeout(()=>setMsg(null),3000); 
+      }
+  };
+
   // --- EFFECTS ---
 
   useEffect(() => {
@@ -1255,6 +1348,15 @@ export default function App() {
           setHasFetchedTeam(false); 
       }
   }, [view]);
+
+// --- URL DETECTOR (PINTU RAHASIA MITRA) ---
+  useEffect(() => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('portal') === 'mitra') {
+          setView('affiliate_portal'); 
+          setAffiliateView('login');
+      }
+  }, []);
 
   // --- AUTO SYNC ON LOAD (INITIAL SYNC) ---
   useEffect(() => {
@@ -2357,6 +2459,107 @@ export default function App() {
         )}
 
       </div>
+
+{/* --- PORTAL MITRA (Hanya muncul via Link Khusus) --- */}
+        {view === 'affiliate_portal' && (
+          <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col p-8 overflow-y-auto font-sans text-slate-800">
+             <div className="flex items-center gap-4 mb-8">
+                 {/* Tombol Back ini akan kembali ke Login Biasa (hapus query param) */}
+                 <button onClick={() => { window.location.href = window.location.pathname; }} className="p-3 bg-white rounded-xl shadow-sm text-slate-500 border border-slate-200"><ChevronLeft size={20}/></button>
+                 <h2 className="text-xl font-black text-slate-900 tracking-tight">Portal Mitra</h2>
+             </div>
+
+             {affiliateView === 'login' && (
+                 <div className="space-y-6 animate-in fade-in">
+                     <div className="text-center space-y-2">
+                        <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-4"><Users size={32}/></div>
+                        <h3 className="text-2xl font-black text-slate-800">Login Mitra</h3>
+                        <p className="text-xs font-bold text-slate-400">Masuk untuk cek komisi Anda</p>
+                     </div>
+                     <div className="bg-white p-6 rounded-[2rem] shadow-xl border border-slate-100 space-y-4">
+                         <input className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none uppercase border-2 border-transparent focus:border-emerald-500 transition-all" placeholder="Kode Mitra (Contoh: MKT-1234)" value={affData.code} onChange={e=>setAffData({...affData, code:e.target.value})} />
+                         <input type="password" className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none border-2 border-transparent focus:border-emerald-500 transition-all" placeholder="PIN Akses" value={affData.pin} onChange={e=>setAffData({...affData, pin:e.target.value})} />
+                         <button onClick={handleAffiliateLogin} disabled={actionLoading} className="w-full py-4 bg-emerald-600 text-white rounded-xl font-black shadow-lg active:scale-95 transition-all">MASUK DASHBOARD</button>
+                     </div>
+                     <p className="text-center text-xs font-bold text-slate-400">Belum terdaftar? <span onClick={()=>setAffiliateView('register')} className="text-emerald-600 underline cursor-pointer hover:text-emerald-500">Daftar Jadi Mitra</span></p>
+                 </div>
+             )}
+
+             {affiliateView === 'register' && (
+                 <div className="space-y-6 animate-in slide-in-from-right-10">
+                     <div className="bg-white p-6 rounded-[2rem] shadow-xl border border-slate-100 space-y-4">
+                         <h3 className="font-black text-slate-800 text-lg">Formulir Pendaftaran</h3>
+                         <input className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none text-xs" placeholder="Nama Lengkap" value={affData.name} onChange={e=>setAffData({...affData, name:e.target.value})} />
+                         <input className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none text-xs" placeholder="No. WhatsApp (Aktif)" value={affData.phone} onChange={e=>setAffData({...affData, phone:e.target.value})} />
+                         <input className="w-full p-4 bg-slate-50 rounded-xl font-bold text-slate-700 outline-none text-xs" placeholder="Info Bank (Nama Bank - No Rek - Atas Nama)" value={affData.bank} onChange={e=>setAffData({...affData, bank:e.target.value})} />
+                         <div className="p-4 bg-yellow-50 rounded-xl border border-yellow-100">
+                            <p className="text-[9px] font-bold text-yellow-700 mb-2 uppercase">Buat PIN Keamanan</p>
+                            <input type="password" className="w-full p-3 bg-white rounded-lg font-black text-slate-700 outline-none text-center tracking-widest" placeholder="******" value={affData.pin} onChange={e=>setAffData({...affData, pin:e.target.value})} />
+                         </div>
+                         <button onClick={handleAffiliateRegister} disabled={actionLoading} className="w-full py-4 bg-blue-600 text-white rounded-xl font-black shadow-lg active:scale-95 transition-all">DAFTAR SEKARANG</button>
+                     </div>
+                     <button onClick={()=>setAffiliateView('login')} className="w-full py-3 text-xs font-bold text-slate-400">Kembali ke Login</button>
+                 </div>
+             )}
+
+             {affiliateView === 'dashboard' && activeAffiliate && (
+                 <div className="space-y-6 text-center animate-in zoom-in-95">
+                     <div className="bg-gradient-to-br from-emerald-600 to-teal-800 p-8 rounded-[2.5rem] text-white shadow-2xl relative overflow-hidden text-left">
+                         <div className="relative z-10">
+                             <div className="flex justify-between items-start mb-6">
+                                <div>
+                                    <p className="text-[10px] font-black uppercase opacity-70 tracking-widest mb-1">Halo, {activeAffiliate.name.split(' ')[0]}</p>
+                                    <h2 className="text-3xl font-black tracking-tight">Komisi Anda</h2>
+                                </div>
+                                <div className="p-2 bg-white/20 rounded-lg backdrop-blur-sm"><Trophy size={20} className="text-yellow-300"/></div>
+                             </div>
+                             
+                             <p className="text-4xl font-mono font-black mb-6 tracking-tighter">Rp {activeAffiliate.unpaidCommission?.toLocaleString('id-ID')}</p>
+                             
+                             <div className="bg-black/20 p-4 rounded-2xl backdrop-blur-md border border-white/10 flex justify-between items-center">
+                                 <div>
+                                     <p className="text-[8px] uppercase opacity-70 mb-1">Kode Referral</p>
+                                     <p className="text-xl font-mono font-black tracking-widest text-yellow-300">{activeAffiliate.code}</p>
+                                 </div>
+                                 <button onClick={() => {navigator.clipboard.writeText(activeAffiliate.code); setMsg({type:'success', text:'Kode disalin!'}); setTimeout(()=>setMsg(null),2000);}} className="p-2 bg-white/20 hover:bg-white/40 rounded-lg transition-colors"><Copy size={16}/></button>
+                             </div>
+                         </div>
+                     </div>
+                     
+                     <div className="grid grid-cols-2 gap-4">
+                         <div className="bg-white p-5 rounded-[2rem] shadow-lg border border-slate-100">
+                             <p className="text-3xl font-black text-slate-800 mb-1">{activeAffiliate.totalReferrals}</p>
+                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Total Klien</p>
+                         </div>
+                         <div className="bg-white p-5 rounded-[2rem] shadow-lg border border-slate-100 flex flex-col items-center justify-center cursor-pointer hover:bg-emerald-50 transition-colors" onClick={()=>window.open(`https://wa.me/6281234567890?text=Halo Admin, saya mitra ${activeAffiliate.code} ingin withdraw komisi Rp ${activeAffiliate.unpaidCommission}`, '_blank')}>
+                             <CreditCard className="w-6 h-6 text-emerald-600 mb-2"/>
+                             <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cairkan Dana</p>
+                         </div>
+                     </div>
+
+                     <div className="bg-white p-6 rounded-[2rem] border border-slate-100 text-left shadow-sm">
+                         <h4 className="font-black text-slate-800 text-xs uppercase mb-4 flex items-center gap-2"><Lightbulb size={14} className="text-yellow-500"/> Cara Dapat Cuan</h4>
+                         <ul className="text-[10px] font-bold text-slate-500 space-y-3">
+                             <li className="flex gap-3">
+                                 <span className="w-5 h-5 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">1</span>
+                                 <span>Bagikan <b>Kode Referral</b> Anda ke pemilik toko/usaha.</span>
+                             </li>
+                             <li className="flex gap-3">
+                                 <span className="w-5 h-5 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">2</span>
+                                 <span>Saat mereka deal, minta mereka info kode Anda ke Admin.</span>
+                             </li>
+                             <li className="flex gap-3">
+                                 <span className="w-5 h-5 rounded-full bg-slate-100 flex items-center justify-center text-slate-600">3</span>
+                                 <span>Saldo otomatis masuk <b>Rp 50.000</b> saat Admin mengaktifkan lisensi.</span>
+                             </li>
+                         </ul>
+                     </div>
+                     
+                     <button onClick={()=>{setActiveAffiliate(null); setAffiliateView('login'); window.location.href = window.location.pathname;}} className="text-xs font-black text-red-400 py-4 hover:text-red-600 transition-colors">Keluar & Kembali ke App Utama</button>
+                 </div>
+             )}
+          </div>
+        )}
 
       <div className="p-8 pt-0 flex flex-col items-center pointer-events-none opacity-20 bg-transparent leading-none">
         <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-900 leading-none">

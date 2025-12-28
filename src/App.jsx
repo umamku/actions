@@ -2178,9 +2178,14 @@ export default function App() {
       </div>
 
       <div className="p-8 pt-0 flex flex-col items-center pointer-events-none opacity-20 bg-transparent leading-none">
-        <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-900 leading-none">ACTIONS Digital</p>
-        <p className="text-[8px] font-bold text-slate-500 mt-2 leading-none">Versi 7.9 • ID TOKO: <span className="text-red-500">{appId}</span></p>
+        <p className="text-[10px] font-black uppercase tracking-[0.4em] text-slate-900 leading-none">
+          ACTIONS ENTERPRISE
+        </p>
+        <p className="text-[8px] font-bold text-slate-400 mt-2 leading-none tracking-[0.2em]">
+          v4.0 STABLE RELEASE
+        </p>
       </div>
+      
     </div>
   );
 }

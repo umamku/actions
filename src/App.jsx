@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
-import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, serverTimestamp, deleteDoc, increment, addDoc, query, where, orderBy } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, serverTimestamp, deleteDoc, increment, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { CheckCircle, ListTodo, LogOut, Settings, Save, Loader2, Clipboard, User, Clock, ChevronLeft, Zap, Plus, Trash2, Check, ShieldCheck, ArrowRight, ChevronDown, RefreshCw, Users, History, Trophy, KeyRound, RotateCcw, Eye, EyeOff, TrendingUp, BarChart3, ChevronRight, Lightbulb, CloudDownload, BarChart, AlertTriangle, Fingerprint, ShieldEllipsis, Activity, CloudOff, Lock, UserPlus, UserMinus, SaveAll, Image as ImageIcon, ArrowUpFromLine, ArrowDownToLine, Timer, Unlock, CalendarClock, Key, CalendarPlus, CreditCard, FileX, Database, Trash, Gift, Copy, Bell } from 'lucide-react';
 
 // --- KONFIGURASI FIREBASE ---
@@ -67,7 +67,6 @@ const ensureReadableColor = (hex) => {
 
 const getDominantColor = (imageUrl) => {
   return new Promise((resolve) => {
-    // Return default jika URL kosong
     if (!imageUrl || imageUrl === DEFAULT_LOGO_URL) {
       resolve(DEFAULT_THEME_COLOR);
       return;
@@ -77,7 +76,6 @@ const getDominantColor = (imageUrl) => {
     img.crossOrigin = "Anonymous";
     img.src = imageUrl;
     
-    // Timeout untuk mencegah blocking
     const timeout = setTimeout(() => {
       resolve(DEFAULT_THEME_COLOR);
     }, 5000);
@@ -164,6 +162,227 @@ const verifySecurePassword = async (input, storedHash) => {
   return false;
 };
 
+// --- HELPER FUNCTIONS GAMIFICATION ---
+const calculateDistance = (lat1, lon1, lat2, lon2) => {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = 
+    Math.sin(dLat/2) * Math.sin(dLat/2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
+    Math.sin(dLon/2) * Math.sin(dLon/2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R * c;
+};
+
+const getCurrentLocation = () => {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error('Geolocation tidak didukung'));
+      return;
+    }
+    
+    const options = {
+      enableHighAccuracy: true,
+      timeout: 10000,
+      maximumAge: 0
+    };
+    
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        resolve({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          timestamp: position.timestamp
+        });
+      },
+      (error) => {
+        let errorMessage = '';
+        switch(error.code) {
+          case error.PERMISSION_DENIED:
+            errorMessage = 'Izin lokasi ditolak.';
+            break;
+          case error.POSITION_UNAVAILABLE:
+            errorMessage = 'Informasi lokasi tidak tersedia.';
+            break;
+          case error.TIMEOUT:
+            errorMessage = 'Request lokasi timeout.';
+            break;
+          default:
+            errorMessage = 'Error tidak diketahui.';
+        }
+        reject(new Error(errorMessage));
+      },
+      options
+    );
+  });
+};
+
+const verifyLocation = async (gamificationConfig) => {
+  try {
+    const currentLocation = await getCurrentLocation();
+    
+    if (!gamificationConfig.companyLat || !gamificationConfig.companyLng) {
+      return { valid: true, distance: 0, location: currentLocation };
+    }
+    
+    const distance = calculateDistance(
+      currentLocation.lat,
+      currentLocation.lng,
+      gamificationConfig.companyLat,
+      gamificationConfig.companyLng
+    );
+    
+    const isValid = distance <= gamificationConfig.locationRadius;
+    
+    return {
+      valid: isValid,
+      distance: Math.round(distance),
+      location: currentLocation,
+      accuracy: currentLocation.accuracy
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      error: error.message,
+      location: null
+    };
+  }
+};
+
+const calculateLevel = (points) => {
+  if (points < 100) return { level: 1, name: "Pemula", nextLevelPoints: 100 };
+  if (points < 300) return { level: 2, name: "Junior", nextLevelPoints: 300 };
+  if (points < 600) return { level: 3, name: "Senior", nextLevelPoints: 600 };
+  if (points < 1000) return { level: 4, name: "Expert", nextLevelPoints: 1000 };
+  if (points < 1500) return { level: 5, name: "Master", nextLevelPoints: 1500 };
+  return { level: 6, name: "Legend", nextLevelPoints: Infinity };
+};
+
+const awardPoints = async (appId, db, userId, type, metadata = {}, gamificationConfig) => {
+  if (!gamificationConfig.enabled) return 0;
+  
+  const userPointsRef = doc(db, 'artifacts', appId, 'public', 'data', 'gamification', userId);
+  const userPointsSnap = await getDoc(userPointsRef);
+  
+  let currentData = userPointsSnap.exists() ? userPointsSnap.data() : {
+    points: 0,
+    level: 1,
+    streak: 0,
+    lastActivity: null,
+    achievements: [],
+    history: []
+  };
+  
+  const today = new Date().toDateString();
+  const lastActivityDate = currentData.lastActivity ? 
+    new Date(currentData.lastActivity).toDateString() : null;
+  
+  if (lastActivityDate === today) {
+    const todayPoints = currentData.history
+      .filter(h => new Date(h.timestamp).toDateString() === today)
+      .reduce((sum, h) => sum + h.points, 0);
+    
+    if (todayPoints >= gamificationConfig.maxPointsPerDay) {
+      return 0;
+    }
+  }
+  
+  let pointsToAdd = 0;
+  switch(type) {
+    case 'ATTENDANCE':
+      pointsToAdd = gamificationConfig.pointsPerAttendance;
+      break;
+    case 'TASK_COMPLETED':
+      pointsToAdd = gamificationConfig.pointsPerTask * (metadata.taskCount || 1);
+      break;
+    case 'STREAK':
+      pointsToAdd = gamificationConfig.pointsPerStreak;
+      break;
+    case 'PERFECT_DAY':
+      pointsToAdd = 50;
+      break;
+    case 'EARLY_CHECKIN':
+      pointsToAdd = 15;
+      break;
+    default:
+      pointsToAdd = 5;
+  }
+  
+  let newStreak = currentData.streak;
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  
+  if (currentData.lastActivity) {
+    const lastDate = new Date(currentData.lastActivity);
+    if (lastDate.toDateString() === yesterday.toDateString()) {
+      newStreak += 1;
+    } else if (lastDate.toDateString() !== today) {
+      newStreak = 1;
+    }
+  } else {
+    newStreak = 1;
+  }
+  
+  const newPoints = currentData.points + pointsToAdd;
+  const levelInfo = calculateLevel(newPoints);
+  
+  const historyEntry = {
+    type,
+    points: pointsToAdd,
+    timestamp: new Date().toISOString(),
+    metadata
+  };
+  
+  const updatedData = {
+    points: newPoints,
+    level: levelInfo.level,
+    streak: newStreak,
+    lastActivity: new Date().toISOString(),
+    achievements: currentData.achievements,
+    history: [...(currentData.history || []), historyEntry].slice(-100)
+  };
+  
+  await setDoc(userPointsRef, updatedData);
+  
+  return { points: pointsToAdd, data: updatedData };
+};
+
+const getActivityIcon = (type) => {
+  switch(type) {
+    case 'ATTENDANCE': return <User className="w-5 h-5" />;
+    case 'TASK_COMPLETED': return <CheckCircle className="w-5 h-5" />;
+    case 'STREAK': return <Zap className="w-5 h-5" />;
+    case 'PERFECT_DAY': return <Trophy className="w-5 h-5" />;
+    case 'EARLY_CHECKIN': return <Clock className="w-5 h-5" />;
+    default: return <Activity className="w-5 h-5" />;
+  }
+};
+
+const getActivityIconColor = (type) => {
+  switch(type) {
+    case 'ATTENDANCE': return 'bg-blue-100 text-blue-600';
+    case 'TASK_COMPLETED': return 'bg-emerald-100 text-emerald-600';
+    case 'STREAK': return 'bg-orange-100 text-orange-600';
+    case 'PERFECT_DAY': return 'bg-yellow-100 text-yellow-600';
+    case 'EARLY_CHECKIN': return 'bg-purple-100 text-purple-600';
+    default: return 'bg-slate-100 text-slate-600';
+  }
+};
+
+const getActivityDescription = (type) => {
+  switch(type) {
+    case 'ATTENDANCE': return 'Check-in harian';
+    case 'TASK_COMPLETED': return 'Menyelesaikan task';
+    case 'STREAK': return 'Streak berkelanjutan';
+    case 'PERFECT_DAY': return 'Semua task selesai';
+    case 'EARLY_CHECKIN': return 'Check-in lebih awal';
+    default: return 'Aktivitas';
+  }
+};
+
+// --- COMPONENTS ---
 const VisualProgress = ({ percent, colorClass = "bg-emerald-500" }) => (
   <div className="w-full h-3 bg-white/20 rounded-full overflow-hidden mt-3 border border-white/10 shadow-inner">
     <div className={`h-full ${colorClass} transition-all duration-1000 ease-out rounded-full shadow-[0_0_10px_rgba(255,255,255,0.4)]`} style={{ width: `${percent}%` }}></div>
@@ -171,8 +390,8 @@ const VisualProgress = ({ percent, colorClass = "bg-emerald-500" }) => (
 );
 
 const CircularProgress = ({ percent, color = "#10b981", bgStroke = "#e2e8f0" }) => {
-  const radius = 36; 
-  const circumference = 2 * Math.PI * radius; 
+  const radius = 36;
+  const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percent / 100) * circumference;
   return (
     <div className="relative inline-flex items-center justify-center">
@@ -198,8 +417,8 @@ const CountdownDisplay = ({ targetDate, label = "Sisa Waktu" }) => {
       const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
       return `${days} Hari ${hours} Jam ${minutes} Menit`;
     };
-    setTimeLeft(calculateTime()); 
-    const interval = setInterval(() => setTimeLeft(calculateTime()), 60000); 
+    setTimeLeft(calculateTime());
+    const interval = setInterval(() => setTimeLeft(calculateTime()), 60000);
     return () => clearInterval(interval);
   }, [targetDate]);
   return <span className="font-mono font-bold text-[10px] opacity-90">{label}: {timeLeft}</span>;
@@ -212,153 +431,411 @@ const LogoComponent = ({ logoUrl, themeColor, size = "normal" }) => {
   return <img src={logoUrl} alt="Logo" onError={() => setError(true)} className={`${size === "large" ? "w-32 h-auto drop-shadow-2xl" : "w-10 h-10 object-contain"}`} />;
 };
 
-const GAS_SCRIPT_CODE = `/**
-* UPDATE SCRIPT GOOGLE APPS ANDA DENGAN KODE INI
-*/
-function doGet(e) {
- var action = e.parameter.action;
- var doc = SpreadsheetApp.getActiveSpreadsheet();
+const GamificationDashboard = ({ selectedEmployee, userPoints, leaderboard, employees, themeColor, fetchLeaderboard }) => {
+  const currentUserPoints = userPoints[selectedEmployee?.id];
+  const currentUserRank = leaderboard.find(item => item.userId === selectedEmployee?.id)?.rank || '-';
+  
+  return (
+    <div className="px-6 py-8 space-y-8 animate-in fade-in pb-20">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-black text-slate-900">Poin & Prestasi</h2>
+        <button 
+          onClick={fetchLeaderboard}
+          className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl font-bold text-sm"
+        >
+          <RefreshCw className="w-4 h-4" /> Refresh
+        </button>
+      </div>
+      
+      {currentUserPoints && (
+        <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-[2.5rem] p-8 text-white shadow-2xl">
+          <div className="flex justify-between items-start mb-6">
+            <div>
+              <p className="text-emerald-100 text-sm font-bold mb-2">Rank #{currentUserRank}</p>
+              <h3 className="text-3xl font-black mb-2">{selectedEmployee?.name}</h3>
+              <div className="flex items-center gap-3">
+                <div className="bg-white/20 px-3 py-1 rounded-full text-sm font-bold">
+                  Level {currentUserPoints.level}
+                </div>
+                <div className="text-sm font-bold">
+                  🔥 {currentUserPoints.streak} hari streak
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-5xl font-black">{currentUserPoints.points}</div>
+              <p className="text-emerald-100">Total Poin</p>
+            </div>
+          </div>
+          
+          <div className="mb-4">
+            <div className="flex justify-between text-sm font-bold mb-2">
+              <span>Progress ke Level {currentUserPoints.level + 1}</span>
+              <span>{currentUserPoints.points}/{calculateLevel(currentUserPoints.points).nextLevelPoints}</span>
+            </div>
+            <div className="w-full h-4 bg-white/30 rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-yellow-400 rounded-full transition-all duration-1000"
+                style={{ 
+                  width: `${(currentUserPoints.points / calculateLevel(currentUserPoints.points).nextLevelPoints) * 100}%` 
+                }}
+              ></div>
+            </div>
+          </div>
+          
+          <div className="grid grid-cols-3 gap-4 mt-6">
+            <div className="text-center">
+              <div className="text-2xl font-black">{currentUserPoints.history?.filter(h => 
+                new Date(h.timestamp).toDateString() === new Date().toDateString()
+              ).length || 0}</div>
+              <p className="text-sm opacity-80">Aktivitas Hari Ini</p>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-black">{currentUserPoints.achievements?.length || 0}</div>
+              <p className="text-sm opacity-80">Pencapaian</p>
+            </div>
+            <div className="text-center">
+              <div className="text-2xl font-black">
+                {currentUserPoints.history?.filter(h => h.type === 'TASK_COMPLETED').length || 0}
+              </div>
+              <p className="text-sm opacity-80">Task Selesai</p>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 p-6">
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-xl font-black text-slate-900">Leaderboard</h3>
+          <select className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm">
+            <option>Bulan Ini</option>
+            <option>Minggu Ini</option>
+            <option>Sepanjang Waktu</option>
+          </select>
+        </div>
+        
+        <div className="space-y-4">
+          {leaderboard.slice(0, 10).map((player, index) => {
+            const isCurrentUser = player.userId === selectedEmployee?.id;
+            return (
+              <div 
+                key={player.userId} 
+                className={`p-4 rounded-2xl flex items-center justify-between ${isCurrentUser ? 'bg-emerald-50 border-2 border-emerald-200' : 'bg-slate-50'}`}
+              >
+                <div className="flex items-center">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${index < 3 ? 'bg-yellow-500 text-white' : 'bg-slate-200'}`}>
+                    {player.rank}
+                  </div>
+                  <div className="ml-4">
+                    <p className={`font-bold ${isCurrentUser ? 'text-emerald-600' : 'text-slate-900'}`}>
+                      {employees.find(e => e.id === player.userId)?.name || player.userId}
+                      {isCurrentUser && <span className="ml-2 text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded">Anda</span>}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs font-bold text-emerald-600">Level {player.level}</span>
+                      <span className="text-xs text-slate-500">•</span>
+                      <span className="text-xs text-slate-500">{player.streak} hari streak</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-2xl font-black text-slate-900">{player.points}</div>
+                  <div className="text-xs text-slate-500">poin</div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      
+      {currentUserPoints?.history && currentUserPoints.history.length > 0 && (
+        <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 p-6">
+          <h3 className="text-xl font-black text-slate-900 mb-6">Aktivitas Terakhir</h3>
+          <div className="space-y-3">
+            {currentUserPoints.history.slice(-5).reverse().map((activity, idx) => (
+              <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
+                <div className="flex items-center">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${getActivityIconColor(activity.type)}`}>
+                    {getActivityIcon(activity.type)}
+                  </div>
+                  <div className="ml-4">
+                    <p className="font-bold text-slate-900">{getActivityDescription(activity.type)}</p>
+                    <p className="text-sm text-slate-500">
+                      {new Date(activity.timestamp).toLocaleTimeString('id-ID', {hour: '2-digit', minute: '2-digit'})}
+                    </p>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-lg font-black text-emerald-600">+{activity.points}</div>
+                  <div className="text-xs text-slate-500">poin</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
- if (action == 'get_config') {
-     var sheet = doc.getSheetByName('Config');
-     if (!sheet || sheet.getLastRow() === 0) return createJsonResponse({});
-     var data = sheet.getDataRange().getValues();
-     var config = {};
-     for (var i = 1; i < data.length; i++) {
-         if (data[i][0]) config[data[i][0]] = data[i][1];
-     }
-     return createJsonResponse(config);
- }
+const GamificationSettings = ({ 
+  gamificationConfig, 
+  setGamificationConfig, 
+  handleSaveGamificationConfig, 
+  themeColor, 
+  actionLoading,
+  setMsg,
+  getCurrentLocation 
+}) => {
+  const [testLoading, setTestLoading] = useState(false);
 
- if (action == 'get_employees') {
-   var sheet = doc.getSheetByName('DataPegawai');
-   if (!sheet || sheet.getLastRow() <= 1) return createJsonResponse([]);
-   var data = sheet.getDataRange().getValues();
-   if (data.length > 1) {
-      data.shift(); 
-      var result = data.map(function(row) {
-        return { id: String(row[0]), name: String(row[1]), defaultPin: String(row[2]) };
-      });
-      return createJsonResponse(result);
-   }
-   return createJsonResponse([]);
- }
-
- var sheet = doc.getSheetByName('Absensi');
- if (!sheet || sheet.getLastRow() <= 1) return createJsonResponse([]);
- var data = sheet.getDataRange().getValues();
- if (data.length > 0) data.shift(); 
-   
- var name = e.parameter.name;
- var result = [];
-
- for (var i = 0; i < data.length; i++) {
-    var row = data[i];
-    if (!row[0] || row[0] === "" || !row[1]) continue;
-    if (action != 'get_all_attendance' && name) {
-       if (String(row[1]).toLowerCase().trim() != String(name).toLowerCase().trim()) continue;
+  const handleTestLocation = async () => {
+    setTestLoading(true);
+    try {
+      const result = await verifyLocation(gamificationConfig);
+      
+      if (result.valid) {
+        setMsg({ 
+          type: 'success', 
+          text: `Lokasi valid! Jarak: ${result.distance}m dari kantor. Akurasi: ${result.accuracy?.toFixed(1)}m` 
+        });
+      } else {
+        setMsg({ 
+          type: 'error', 
+          text: `Lokasi tidak valid! ${result.error || `Jarak: ${result.distance}m (max ${gamificationConfig.locationRadius}m)`}` 
+        });
+      }
+    } catch (error) {
+      setMsg({ type: 'error', text: error.message });
+    } finally {
+      setTestLoading(false);
     }
-    var ts = row[0];
-    var tsValue = (ts instanceof Date) ? ts.getTime() : new Date(ts).getTime();
-    result.push({ 
-         timestamp: tsValue, 
-         name: String(row[1]), 
-         type: String(row[2]), 
-         tasks: String(row[3]), 
-         note: String(row[4]), 
-         status: String(row[5]) 
-    });
- }
- return createJsonResponse(result.reverse());
-}
+  };
 
-function doPost(e) {
- var lock = LockService.getScriptLock();
- lock.tryLock(10000);
- try {
-   var doc = SpreadsheetApp.getActiveSpreadsheet();
-   var data = JSON.parse(e.postData.contents);
-
-   if (data.action === 'reset_history') {
-       var sheet = doc.getSheetByName('Absensi');
-       if (sheet && sheet.getLastRow() > 1) {
-           sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-       }
-       return createJsonResponse({ "result": "success", "message": "History Cleared" });
-   }
-
-   if (data.action === 'update_config') {
-       var sheet = doc.getSheetByName('Config');
-       if (!sheet) {
-           sheet = doc.insertSheet('Config');
-           sheet.appendRow(['Key', 'Value']);
-       }
-       var existing = sheet.getDataRange().getValues();
-       var map = {};
-       for(var i=1; i<existing.length; i++) map[existing[i][0]] = i + 1;
-
-       var setVal = function(key, val) {
-           if (map[key]) sheet.getRange(map[key], 2).setValue(val);
-           else { sheet.appendRow([key, val]); map[key] = sheet.getLastRow(); }
-       };
-
-       if (data.logoUrl) setVal('logoUrl', data.logoUrl);
-       if (data.trialEnabled !== undefined) setVal('trialEnabled', data.trialEnabled);
-       if (data.trialEndDate) setVal('trialEndDate', data.trialEndDate);
-       if (data.subscriptionEnabled !== undefined) setVal('subscriptionEnabled', data.subscriptionEnabled);
-       if (data.subscriptionEndDate) setVal('subscriptionEndDate', data.subscriptionEndDate);
-       
-       return createJsonResponse({ "result": "success", "message": "Config Updated" });
-   }
-
-   if (data.action === 'update_employees') {
-       var empSheet = doc.getSheetByName('DataPegawai');
-       if (!empSheet) { empSheet = doc.insertSheet('DataPegawai'); }
-       empSheet.clear();
-       empSheet.appendRow(['ID', 'Nama', 'Default PIN', 'Last Updated']);
-       var rows = data.data.map(function(emp){
-           return [emp.id, emp.name, emp.defaultPin || '123456', new Date()];
-       });
-       if(rows.length > 0) {
-           empSheet.getRange(2, 1, rows.length, 4).setValues(rows);
-       }
-       return createJsonResponse({ "result": "success", "message": "Data Pegawai Updated" });
-   }
-
-   if (data.name) {
-       var sheet = doc.getSheetByName('Absensi');
-       if (!sheet) {
-         sheet = doc.insertSheet('Absensi');
-         sheet.appendRow(['Timestamp', 'Nama', 'Tipe', 'Daftar Tugas', 'Catatan Tambahan', 'Status']);
-       }
-       var timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
-       var todoString = "";
-       if (data.todos) {
-          if (typeof data.todos === 'string' && (data.todos.startsWith('[') || data.todos.startsWith('{'))) {
-            try {
-              var tasks = JSON.parse(data.todos);
-              if (Array.isArray(tasks)) {
-                 todoString = tasks.map(function(t) { return (t.done ? "[x] " : "[ ] ") + (t.text || ""); }).join("\\n");
-              }
-            } catch (e) { todoString = data.todos; }
-          } else {
-            todoString = data.todos;
-          }
-       }
-       sheet.appendRow([timestamp, data.name, data.type || 'INFO', todoString, data.note || "-", data.status || 'Hadir']);
-       return createJsonResponse({ "result": "success", "message": "Absensi Saved" });
-   }
-   
-   return createJsonResponse({ "result": "error", "message": "Invalid Data" });
- } catch (e) {
-   return createJsonResponse({ "result": "error", "error": e.toString() });
- } finally { lock.releaseLock(); }
-}
-
-function createJsonResponse(obj) {
- return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
-}
-`;
+  return (
+    <div className="space-y-6 animate-in fade-in">
+      <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center">
+              <Trophy className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black text-slate-900 uppercase">Sistem Gamifikasi</h3>
+              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                Status: {gamificationConfig.enabled ? 'AKTIF' : 'NONAKTIF'}
+              </p>
+            </div>
+          </div>
+          <button 
+            onClick={() => setGamificationConfig(prev => ({ ...prev, enabled: !prev.enabled }))} 
+            className={`w-14 h-8 rounded-full p-1 transition-all ${gamificationConfig.enabled ? 'bg-emerald-500' : 'bg-slate-200'}`}
+          >
+            <div className={`w-6 h-6 bg-white rounded-full shadow-sm transform transition-all ${gamificationConfig.enabled ? 'translate-x-6' : ''}`}></div>
+          </button>
+        </div>
+      </div>
+      
+      {gamificationConfig.enabled && (
+        <>
+          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-6">
+            <h3 className="text-lg font-black text-slate-900">Pengaturan Poin</h3>
+            
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                  Poin per Kehadiran
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                  value={gamificationConfig.pointsPerAttendance}
+                  onChange={e => setGamificationConfig(prev => ({ 
+                    ...prev, 
+                    pointsPerAttendance: parseInt(e.target.value) || 0 
+                  }))}
+                />
+              </div>
+              
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                  Poin per Task Selesai
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                  value={gamificationConfig.pointsPerTask}
+                  onChange={e => setGamificationConfig(prev => ({ 
+                    ...prev, 
+                    pointsPerTask: parseInt(e.target.value) || 0 
+                  }))}
+                />
+              </div>
+              
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                  Poin Streak
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                  value={gamificationConfig.pointsPerStreak}
+                  onChange={e => setGamificationConfig(prev => ({ 
+                    ...prev, 
+                    pointsPerStreak: parseInt(e.target.value) || 0 
+                  }))}
+                />
+              </div>
+              
+              <div>
+                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                  Maks Poin per Hari
+                </label>
+                <input 
+                  type="number" 
+                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                  value={gamificationConfig.maxPointsPerDay}
+                  onChange={e => setGamificationConfig(prev => ({ 
+                    ...prev, 
+                    maxPointsPerDay: parseInt(e.target.value) || 0 
+                  }))}
+                />
+              </div>
+            </div>
+          </div>
+          
+          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
+                  <span className="text-lg">📍</span>
+                </div>
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 uppercase">Verifikasi Lokasi</h3>
+                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                    Cegah kecurangan absensi
+                  </p>
+                </div>
+              </div>
+              <button 
+                onClick={() => setGamificationConfig(prev => ({ ...prev, locationVerification: !prev.locationVerification }))} 
+                className={`w-14 h-8 rounded-full p-1 transition-all ${gamificationConfig.locationVerification ? 'bg-blue-500' : 'bg-slate-200'}`}
+              >
+                <div className={`w-6 h-6 bg-white rounded-full shadow-sm transform transition-all ${gamificationConfig.locationVerification ? 'translate-x-6' : ''}`}></div>
+              </button>
+            </div>
+            
+            {gamificationConfig.locationVerification && (
+              <div className="space-y-4 pt-4 border-t border-slate-50 animate-in slide-in-from-top-2">
+                <div>
+                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                    Radius Valid (meter)
+                  </label>
+                  <input 
+                    type="number" 
+                    className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                    value={gamificationConfig.locationRadius}
+                    onChange={e => setGamificationConfig(prev => ({ 
+                      ...prev, 
+                      locationRadius: parseInt(e.target.value) || 100 
+                    }))}
+                  />
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                      Latitude Kantor
+                    </label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                      value={gamificationConfig.companyLat || ''}
+                      onChange={e => setGamificationConfig(prev => ({ 
+                        ...prev, 
+                        companyLat: parseFloat(e.target.value) 
+                      }))}
+                      placeholder="-6.2088"
+                    />
+                  </div>
+                  
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+                      Longitude Kantor
+                    </label>
+                    <input 
+                      type="number" 
+                      step="any"
+                      className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
+                      value={gamificationConfig.companyLng || ''}
+                      onChange={e => setGamificationConfig(prev => ({ 
+                        ...prev, 
+                        companyLng: parseFloat(e.target.value) 
+                      }))}
+                      placeholder="106.8456"
+                    />
+                  </div>
+                </div>
+                
+                <div className="flex gap-2">
+                  <button 
+                    onClick={async () => {
+                      try {
+                        const location = await getCurrentLocation();
+                        setGamificationConfig(prev => ({
+                          ...prev,
+                          companyLat: location.lat,
+                          companyLng: location.lng
+                        }));
+                        setMsg({ type: 'success', text: 'Lokasi kantor berhasil diset!' });
+                      } catch (error) {
+                        setMsg({ type: 'error', text: error.message });
+                      }
+                    }}
+                    className="flex-1 py-3 bg-blue-100 text-blue-600 rounded-xl font-bold text-sm"
+                  >
+                    📍 Gunakan Lokasi Saat Ini
+                  </button>
+                  
+                  <button 
+                    onClick={() => {
+                      const url = `https://www.google.com/maps?q=${gamificationConfig.companyLat},${gamificationConfig.companyLng}`;
+                      window.open(url, '_blank');
+                    }}
+                    disabled={!gamificationConfig.companyLat || !gamificationConfig.companyLng}
+                    className="flex-1 py-3 bg-emerald-100 text-emerald-600 rounded-xl font-bold text-sm"
+                  >
+                    🗺️ Lihat di Google Maps
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          
+          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4">
+            <h3 className="text-lg font-black text-slate-900">Test Lokasi</h3>
+            <button 
+              onClick={handleTestLocation}
+              disabled={testLoading}
+              className="w-full py-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl font-bold shadow-lg active:scale-95 transition-all"
+            >
+              {testLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Test Lokasi Saat Ini'}
+            </button>
+          </div>
+          
+          <button 
+            onClick={handleSaveGamificationConfig}
+            className="w-full text-white py-5 rounded-2xl font-black text-xs uppercase shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2" 
+            style={{ backgroundColor: themeColor }}
+          >
+            <Save className="w-4 h-4" /> Simpan Pengaturan Gamifikasi
+          </button>
+        </>
+      )}
+    </div>
+  );
+};
 
 // Error Boundary Component
 class ErrorBoundary extends React.Component {
@@ -400,6 +877,7 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+// Main App Component
 function App() {
   const [affiliateView, setAffiliateView] = useState('login');
   const [affData, setAffData] = useState({ name: '', phone: '', bank: '', code: '', pin: '' });
@@ -408,24 +886,24 @@ function App() {
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
   const [affGlobalConfig, setAffGlobalConfig] = useState({ minWd: 100000, adminWa: '', rewardPerRef: 50000 });
   const [pendingWithdrawals, setPendingWithdrawals] = useState([]);
-  const [proofInput, setProofInput] = useState(''); 
-  const [processingWdId, setProcessingWdId] = useState(null); 
-  const [wdHistory, setWdHistory] = useState([]); 
+  const [proofInput, setProofInput] = useState('');
+  const [processingWdId, setProcessingWdId] = useState(null);
+  const [wdHistory, setWdHistory] = useState([]);
   const [affiliateTabUnlocked, setAffiliateTabUnlocked] = useState(false);
-  const [affiliateTabPass, setAffiliateTabPass] = useState('');            
-  const [user, setUser] = useState(null); 
-  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES); 
-  const [selectedEmployee, setSelectedEmployee] = useState(null); 
+  const [affiliateTabPass, setAffiliateTabPass] = useState('');
+  const [user, setUser] = useState(null);
+  const [employees, setEmployees] = useState(DEFAULT_EMPLOYEES);
+  const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [view, setView] = useState('login');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [confirmDeleteId, setConfirmDeleteId] = useState(null); 
-  const [syncLoading, setSyncLoading] = useState(false); 
+  const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+  const [syncLoading, setSyncLoading] = useState(false);
   const [attendanceData, setAttendanceData] = useState(null);
-  const [tempTasks, setTempTasks] = useState([]); 
+  const [tempTasks, setTempTasks] = useState([]);
   const [taskInput, setTaskInput] = useState('');
-  const [checkoutNote, setCheckoutNote] = useState(''); 
+  const [checkoutNote, setCheckoutNote] = useState('');
   const [imageError, setImageError] = useState(false);
   const [loginSelection, setLoginSelection] = useState('');
   const [pinInput, setPinInput] = useState('');
@@ -441,7 +919,7 @@ function App() {
   const [recapLoading, setRecapLoading] = useState(false);
   const [allRecapData, setAllRecapData] = useState([]);
   const [allRecapLoading, setAllRecapLoading] = useState(false);
-  const [filterRange, setFilterRange] = useState('week'); 
+  const [filterRange, setFilterRange] = useState('week');
   const [hasFetchedTeam, setHasFetchedTeam] = useState(false);
   const [passInput, setPassInput] = useState('');
   const [showPass, setShowPass] = useState(false);
@@ -455,6 +933,25 @@ function App() {
   const [confirmAdminPass, setConfirmAdminPass] = useState('');
   const [selectedReportUser, setSelectedReportUser] = useState(null);
   
+  // Gamification State
+  const [gamificationConfig, setGamificationConfig] = useState({
+    enabled: false,
+    pointsPerAttendance: 10,
+    pointsPerTask: 5,
+    pointsPerStreak: 20,
+    maxPointsPerDay: 100,
+    locationVerification: false,
+    locationRadius: 100,
+    companyLat: null,
+    companyLng: null
+  });
+  
+  const [userPoints, setUserPoints] = useState({});
+  const [leaderboard, setLeaderboard] = useState([]);
+  const [userLocation, setUserLocation] = useState(null);
+  const [locationError, setLocationError] = useState('');
+  const [locationPermission, setLocationPermission] = useState('prompt');
+  
   const [config, setConfig] = useState({
     scriptUrl: DEFAULT_SCRIPT_URL,
     logoUrl: DEFAULT_LOGO_URL,
@@ -462,14 +959,14 @@ function App() {
     trialEndDate: '',
     subscriptionEnabled: false,
     subscriptionEndDate: '',
-    myReferralCode: '', 
-    referredBy: ''      
+    myReferralCode: '',
+    referredBy: ''
   });
   
   const [adminPassHash, setAdminPassHash] = useState(DEFAULT_ADMIN_HASH);
   const [themeColor, setThemeColor] = useState(DEFAULT_THEME_COLOR);
   const codeTextAreaRef = useRef(null);
-  const processingRewards = useRef(new Set()); 
+  const processingRewards = useRef(new Set());
 
   // Security measures
   useEffect(() => {
@@ -534,8 +1031,8 @@ function App() {
       setTrialPassInput('');
       setNewAdminPass('');
       setConfirmAdminPass('');
-      setPassInput(''); 
-      setHasFetchedTeam(false); 
+      setPassInput('');
+      setHasFetchedTeam(false);
       setAffiliateTabUnlocked(false);
       setAffiliateTabPass('');
     }
@@ -555,7 +1052,7 @@ function App() {
   const isAccessBlocked = useMemo(() => {
     if (config.trialEnabled) return isTrialExpired;
     if (config.subscriptionEnabled) return isSubscriptionExpired;
-    return false; 
+    return false;
   }, [config.trialEnabled, isTrialExpired, config.subscriptionEnabled, isSubscriptionExpired]);
 
   const getActiveModeLabel = useMemo(() => {
@@ -593,7 +1090,7 @@ function App() {
   const stats = useMemo(() => {
     if (!displayedHistory || displayedHistory.length === 0) return null;
     const uniqueDates = new Set();
-    let totalTasksGlobal = 0; 
+    let totalTasksGlobal = 0;
     let completedTasksGlobal = 0;
     const dailyStats = {};
     
@@ -605,7 +1102,7 @@ function App() {
       uniqueDates.add(dateKey);
       
       const taskLines = item.tasks && typeof item.tasks === 'string' ? item.tasks.split('\n') : [];
-      let itemTotal = 0; 
+      let itemTotal = 0;
       let itemDone = 0;
       
       taskLines.forEach(line => {
@@ -695,7 +1192,6 @@ function App() {
       userStatsMap[name].dates.add(dateStr);
       activeUserCountSet.add(name);
       
-      // Parse tasks
       let taskLines = [];
       if (item.tasks) {
         if (typeof item.tasks === 'string') {
@@ -720,7 +1216,6 @@ function App() {
         }
       }
       
-      // Process string tasks
       taskLines.forEach(line => {
         const trimmed = line.trim();
         if (trimmed) {
@@ -734,14 +1229,12 @@ function App() {
       });
     });
     
-    // Convert to array and calculate scores
     const usersListRaw = Object.values(userStatsMap).map(u => ({
       ...u,
       presenceCount: u.dates.size,
       score: u.totalTasks > 0 ? Math.round((u.doneTasks / u.totalTasks) * 100) : 0
     })).sort((a, b) => b.score - a.score || b.presenceCount - a.presenceCount);
     
-    // Calculate ranks
     const usersList = usersListRaw.map((u, i, arr) => {
       if (i > 0) {
         const prev = arr[i - 1];
@@ -787,16 +1280,17 @@ function App() {
       if (filterRange === 'week') return itemTime >= startOf7DaysAgo;
       if (filterRange === 'month') return itemDateObj.getMonth() === now.getMonth() && itemDateObj.getFullYear() === now.getFullYear();
       if (filterRange === 'last30') return itemTime >= startOf30DaysAgo;
-      return true; // 'all'
+      return true;
     }).sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
   }, [selectedReportUser, allRecapData, filterRange]);
 
+  // Handler Functions
   const handleLoginFailure = () => {
     const newCount = failedAttempts + 1;
     setFailedAttempts(newCount);
     localStorage.setItem('actions_failed_attempts', newCount.toString());
     if (newCount >= 5) {
-      const lockoutDuration = 300 * 1000; 
+      const lockoutDuration = 300 * 1000;
       const until = Date.now() + lockoutDuration;
       localStorage.setItem('actions_lockout_until', until.toString());
       setLockoutTime(300);
@@ -934,11 +1428,11 @@ function App() {
     if (cleanInput === TRIAL_UNLOCK_PASSWORD || cleanInput === LEGACY_PASSWORD) {
       localStorage.removeItem('actions_failed_attempts');
       localStorage.removeItem('actions_lockout_until');
-      setFailedAttempts(0); 
-      setLockoutTime(0); 
-      setView('config'); 
-      setPassInput(''); 
-      return; 
+      setFailedAttempts(0);
+      setLockoutTime(0);
+      setView('config');
+      setPassInput('');
+      return;
     }
     
     if (lockoutTime > 0) { 
@@ -982,7 +1476,7 @@ function App() {
       await setDoc(configRef, { pass: hashedPass, updatedAt: serverTimestamp() }, { merge: true });
       setAdminPassHash(hashedPass);
       setMsg({ type: 'success', text: 'Password Admin Diperbarui!' });
-      setNewAdminPass(''); 
+      setNewAdminPass('');
       setConfirmAdminPass('');
     } catch (err) { 
       setMsg({ type: 'error', text: 'Gagal update password.' }); 
@@ -1164,8 +1658,8 @@ function App() {
         headers: { 'Content-Type': 'text/plain' }, 
         body: JSON.stringify(payload) 
       });
-      setMsg({ type: 'success', text: 'Riwayat berhasil direset!' }); 
-      setAllRecapData([]); 
+      setMsg({ type: 'success', text: 'Riwayat berhasil direset!' });
+      setAllRecapData([]);
     } catch (e) { 
       setMsg({ type: 'error', text: 'Gagal reset data.' }); 
     } finally { 
@@ -1216,10 +1710,10 @@ function App() {
     try {
       const empDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'company_data', 'employee_list');
       await setDoc(empDocRef, { list: updatedList });
-      setEmployees(updatedList); 
-      setNewEmpName(''); 
+      setEmployees(updatedList);
+      setNewEmpName('');
       setNewEmpId('');
-      await updateSheetEmployeeList(updatedList); 
+      await updateSheetEmployeeList(updatedList);
       setMsg({ type: 'success', text: 'Pegawai Ditambahkan!' });
     } catch(e) { 
       setMsg({ type: 'error', text: 'Gagal menambah pegawai.' }); 
@@ -1231,14 +1725,14 @@ function App() {
   
   const handleDeleteEmployee = async (empId, empName) => {
     const updatedList = employees.filter(e => e.id !== empId);
-    setConfirmDeleteId(null); 
+    setConfirmDeleteId(null);
     setActionLoading(true);
     
     try {
       const empDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'company_data', 'employee_list');
       await setDoc(empDocRef, { list: updatedList });
-      setEmployees(updatedList); 
-      await updateSheetEmployeeList(updatedList); 
+      setEmployees(updatedList);
+      await updateSheetEmployeeList(updatedList);
       setMsg({ type: 'success', text: `${empName} dihapus.` });
     } catch(e) { 
       setMsg({ type: 'error', text: 'Gagal menghapus.' }); 
@@ -1270,7 +1764,7 @@ function App() {
       if (Array.isArray(data) && data.length > 0) {
         if (data[0].id && data[0].name) {
           const empDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'company_data', 'employee_list');
-          await setDoc(empDocRef, { list: data }); 
+          await setDoc(empDocRef, { list: data });
           setEmployees(data);
           setMsg({ type: 'success', text: `Berhasil memuat ${data.length} pegawai!` });
         } else { 
@@ -1333,6 +1827,28 @@ function App() {
     }
     
     setActionLoading(true);
+    
+    let locationVerification = null;
+    if (gamificationConfig.enabled && gamificationConfig.locationVerification) {
+      try {
+        locationVerification = await verifyLocation(gamificationConfig);
+        
+        if (!locationVerification.valid) {
+          setMsg({ 
+            type: 'error', 
+            text: `Anda berada ${locationVerification.distance}m dari kantor. Absen hanya bisa dilakukan dalam radius ${gamificationConfig.locationRadius}m.` 
+          });
+          setActionLoading(false);
+          return;
+        }
+      } catch (error) {
+        setMsg({ 
+          type: 'warning', 
+          text: 'Lokasi tidak terdeteksi. Absen tetap dicatat tanpa poin bonus.' 
+        });
+      }
+    }
+    
     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'employee_status', selectedEmployee.id);
     
     try {
@@ -1342,12 +1858,42 @@ function App() {
         checkInTime: new Date().toISOString(), 
         tasks: tempTasks, 
         status: 'ACTIVE', 
-        updatedAt: serverTimestamp() 
+        updatedAt: serverTimestamp(),
+        location: locationVerification?.location || null,
+        locationValidated: !!locationVerification?.valid
       };
       
       await setDoc(docRef, data); 
       await sendToSheet('CHECK_IN', tempTasks, selectedEmployee.name);
-      setMsg({ type: 'success', text: 'Selamat Bekerja!' }); 
+      
+      if (gamificationConfig.enabled) {
+        const result = await awardPoints(appId, db, selectedEmployee.id, 'ATTENDANCE', {
+          locationValid: !!locationVerification?.valid,
+          distance: locationVerification?.distance
+        }, gamificationConfig);
+        
+        if (result.points > 0) {
+          setUserPoints(prev => ({
+            ...prev,
+            [selectedEmployee.id]: result.data
+          }));
+          setMsg({ 
+            type: 'success', 
+            text: `Selamat Bekerja! +${result.points} poin` 
+          });
+        } else {
+          setMsg({ type: 'success', text: 'Selamat Bekerja!' });
+        }
+      } else {
+        setMsg({ type: 'success', text: 'Selamat Bekerja!' });
+      }
+      
+      const now = new Date();
+      const checkinHour = now.getHours();
+      if (checkinHour < 9 && gamificationConfig.enabled) {
+        await awardPoints(appId, db, selectedEmployee.id, 'EARLY_CHECKIN', {}, gamificationConfig);
+      }
+      
       setTempTasks([]); 
       setTaskInput('');
     } catch (err) { 
@@ -1364,11 +1910,52 @@ function App() {
     const updatedTasks = [...attendanceData.tasks]; 
     updatedTasks[idx].done = !updatedTasks[idx].done;
     
+    if (updatedTasks[idx].done) {
+      updatedTasks[idx].completedAt = new Date().toISOString();
+      updatedTasks[idx].completedBy = selectedEmployee.id;
+    } else {
+      delete updatedTasks[idx].completedAt;
+      delete updatedTasks[idx].completedBy;
+    }
+    
     const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'employee_status', selectedEmployee.id);
+    
     try { 
-      await updateDoc(docRef, { tasks: updatedTasks, updatedAt: serverTimestamp() }); 
+      await updateDoc(docRef, { 
+        tasks: updatedTasks, 
+        updatedAt: serverTimestamp() 
+      }); 
+      
       await sendToSheet('UPDATE', updatedTasks, selectedEmployee.name, attendanceData.note || ""); 
-    } catch(e) {}
+      
+      if (gamificationConfig.enabled && updatedTasks[idx].done) {
+        const result = await awardPoints(appId, db, selectedEmployee.id, 'TASK_COMPLETED', {
+          taskId: idx,
+          taskText: updatedTasks[idx].text.substring(0, 50)
+        }, gamificationConfig);
+        
+        if (result.points > 0) {
+          setUserPoints(prev => ({
+            ...prev,
+            [selectedEmployee.id]: result.data
+          }));
+          setMsg({ 
+            type: 'success', 
+            text: `Task selesai! +${result.points} poin` 
+          });
+          setTimeout(() => setMsg(null), 2000);
+        }
+        
+        const allTasksDone = updatedTasks.every(task => task.done);
+        if (allTasksDone) {
+          await awardPoints(appId, db, selectedEmployee.id, 'PERFECT_DAY', {
+            taskCount: updatedTasks.length
+          }, gamificationConfig);
+        }
+      }
+    } catch(e) {
+      console.error("Error updating task:", e);
+    }
   };
   
   const addTaskToActiveSession = async () => {
@@ -1427,7 +2014,7 @@ function App() {
     
     setActionLoading(true);
     try {
-      const newCode = 'MKT-' + Math.floor(1000 + Math.random() * 9000); 
+      const newCode = 'MKT-' + Math.floor(1000 + Math.random() * 9000);
       const affiliateRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'affiliates', newCode);
       await setDoc(affiliateRef, { 
         code: newCode, 
@@ -1443,8 +2030,8 @@ function App() {
       const globalRegRef = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'referral_codes', newCode);
       await setDoc(globalRegRef, { ownerType: 'AFFILIATE', updatedAt: serverTimestamp() });
       
-      setAffData({...affData, code: newCode}); 
-      setMsg({type:'success', text: `Pendaftaran Sukses! Kode: ${newCode}`}); 
+      setAffData({...affData, code: newCode});
+      setMsg({type:'success', text: `Pendaftaran Sukses! Kode: ${newCode}`});
       setAffiliateView('login');
     } catch(e) { 
       setMsg({type:'error', text:'Gagal mendaftar.'}); 
@@ -1476,52 +2063,51 @@ function App() {
     }
   };
 
-  // Watch pending withdrawals
-  useEffect(() => {
-    let unsubscribeWd = () => {}; 
-    if (view === 'config') {
-      const fetchAffConfig = async () => {
-        const ref = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings');
-        const snap = await getDoc(ref);
-        if (snap.exists()) setAffGlobalConfig(snap.data());
-      };
-      fetchAffConfig();
+  const fetchLeaderboard = async () => {
+    try {
+      const gamificationRef = collection(db, 'artifacts', appId, 'public', 'data', 'gamification');
+      const snapshot = await getDocs(gamificationRef);
       
-      const q = query(collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals'), where('status', '==', 'PENDING'));
-      unsubscribeWd = onSnapshot(q, (snapshot) => {
-        const list = snapshot.docs.map(d => ({id: d.id, ...d.data()}));
-        list.sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-        setPendingWithdrawals(list);
+      const leaderboardData = [];
+      snapshot.forEach(docSnap => {
+        const data = docSnap.data();
+        if (data.points > 0) {
+          leaderboardData.push({
+            userId: docSnap.id,
+            ...data,
+            levelInfo: calculateLevel(data.points)
+          });
+        }
       });
-    }
-    return () => unsubscribeWd();
-  }, [view]);
-
-  const handleSaveAffiliateSettings = async () => {
-    setActionLoading(true);
-    try { 
-      await setDoc(doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings'), affGlobalConfig); 
-      setMsg({type:'success', text:'Pengaturan Mitra Disimpan!'}); 
-    } catch(e) { 
-      setMsg({type:'error', text:'Gagal simpan.'}); 
-    } finally { 
-      setActionLoading(false); 
-      setTimeout(()=>setMsg(null),2000); 
+      
+      leaderboardData.sort((a, b) => b.points - a.points);
+      
+      leaderboardData.forEach((item, index) => {
+        item.rank = index + 1;
+      });
+      
+      setLeaderboard(leaderboardData);
+    } catch (error) {
+      console.error("Error fetching leaderboard:", error);
     }
   };
 
-  const handleUnlockAffiliateTab = async () => {
-    const isValid = await verifySecurePassword(affiliateTabPass, adminPassHash);
-    if (isValid) { 
-      setAffiliateTabUnlocked(true); 
-      setMsg({type:'success', text:'Akses Mitra Terbuka!'}); 
-    } else { 
-      setMsg({type:'error', text:'Password Salah!'}); 
+  const handleSaveGamificationConfig = async () => {
+    setActionLoading(true);
+    try {
+      const configRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'gamification');
+      await setDoc(configRef, gamificationConfig);
+      setMsg({ type: 'success', text: 'Pengaturan gamifikasi disimpan!' });
+    } catch (error) {
+      setMsg({ type: 'error', text: 'Gagal menyimpan pengaturan' });
+    } finally {
+      setActionLoading(false);
+      setTimeout(() => setMsg(null), 3000);
     }
   };
 
   const handleAmountChange = (val) => {
-    const rawValue = val.replace(/\D/g, ''); 
+    const rawValue = val.replace(/\D/g, '');
     if (rawValue === '') { 
       setWithdrawAmount(''); 
       return; 
@@ -1531,7 +2117,7 @@ function App() {
 
   const handleRequestWithdraw = async () => {
     const rawString = withdrawAmount ? withdrawAmount.toString().replace(/\./g, '') : '0';
-    const amount = parseInt(rawString); 
+    const amount = parseInt(rawString);
     
     if (!amount || amount <= 0) { 
       setMsg({type:'error', text:'Masukkan nominal yang benar.'}); 
@@ -1623,6 +2209,50 @@ function App() {
     }
   };
 
+  const handleUnlockAffiliateTab = async () => {
+    const isValid = await verifySecurePassword(affiliateTabPass, adminPassHash);
+    if (isValid) { 
+      setAffiliateTabUnlocked(true); 
+      setMsg({type:'success', text:'Akses Mitra Terbuka!'}); 
+    } else { 
+      setMsg({type:'error', text:'Password Salah!'}); 
+    }
+  };
+
+  const handleSaveAffiliateSettings = async () => {
+    setActionLoading(true);
+    try { 
+      await setDoc(doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings'), affGlobalConfig); 
+      setMsg({type:'success', text:'Pengaturan Mitra Disimpan!'}); 
+    } catch(e) { 
+      setMsg({type:'error', text:'Gagal simpan.'}); 
+    } finally { 
+      setActionLoading(false); 
+      setTimeout(()=>setMsg(null),2000); 
+    }
+  };
+
+  // Watch pending withdrawals
+  useEffect(() => {
+    let unsubscribeWd = () => {}; 
+    if (view === 'config') {
+      const fetchAffConfig = async () => {
+        const ref = doc(db, 'artifacts', 'GLOBAL_SYSTEM', 'config', 'affiliate_settings');
+        const snap = await getDoc(ref);
+        if (snap.exists()) setAffGlobalConfig(snap.data());
+      };
+      fetchAffConfig();
+      
+      const q = query(collection(db, 'artifacts', 'GLOBAL_SYSTEM', 'withdrawals'), where('status', '==', 'PENDING'));
+      unsubscribeWd = onSnapshot(q, (snapshot) => {
+        const list = snapshot.docs.map(d => ({id: d.id, ...d.data()}));
+        list.sort((a,b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+        setPendingWithdrawals(list);
+      });
+    }
+    return () => unsubscribeWd();
+  }, [view]);
+
   // Watch withdrawal history
   useEffect(() => {
     let unsubscribeHistory = () => {};
@@ -1641,7 +2271,6 @@ function App() {
   useEffect(() => {
     const initAuth = async () => { 
       try { 
-        // Check for token in URL parameter
         const urlParams = new URLSearchParams(window.location.search);
         const token = urlParams.get('token');
         
@@ -1652,7 +2281,6 @@ function App() {
         }
       } catch (err) { 
         console.error("Auth failed:", err);
-        // Fallback to anonymous
         try {
           await signInAnonymously(auth);
         } catch (fallbackErr) {
@@ -1792,6 +2420,46 @@ function App() {
     };
   }, [user]);
 
+  // Load gamification config
+  useEffect(() => {
+    if (!user) return;
+    
+    const gamificationRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'gamification');
+    const unsubscribe = onSnapshot(gamificationRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setGamificationConfig(docSnap.data());
+      }
+    });
+    
+    return () => unsubscribe();
+  }, [user]);
+
+  // Load user points saat login
+  useEffect(() => {
+    if (selectedEmployee?.id) {
+      const pointsRef = doc(db, 'artifacts', appId, 'public', 'data', 'gamification', selectedEmployee.id);
+      const unsubscribe = onSnapshot(pointsRef, (docSnap) => {
+        if (docSnap.exists()) {
+          setUserPoints(prev => ({
+            ...prev,
+            [selectedEmployee.id]: docSnap.data()
+          }));
+        }
+      });
+      
+      return () => unsubscribe();
+    }
+  }, [selectedEmployee?.id]);
+
+  // Fetch leaderboard periodically
+  useEffect(() => {
+    if (gamificationConfig.enabled) {
+      fetchLeaderboard();
+      const interval = setInterval(fetchLeaderboard, 30000);
+      return () => clearInterval(interval);
+    }
+  }, [gamificationConfig.enabled]);
+
   // Watch for referral rewards
   useEffect(() => {
     if (!config.myReferralCode) return;
@@ -1840,7 +2508,7 @@ function App() {
     });
     
     return () => unsubscribeRewards();
-  }, [config.myReferralCode, config.subscriptionEndDate]); 
+  }, [config.myReferralCode, config.subscriptionEndDate]);
 
   useEffect(() => { setImageError(false); }, [config.logoUrl]);
 
@@ -1863,17 +2531,17 @@ function App() {
         
         if (data.status === 'ACTIVE') { 
           setAttendanceData(data); 
-          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config'].includes(prev)) ? prev : 'dashboard'); 
+          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config', 'gamification'].includes(prev)) ? prev : 'dashboard'); 
         } else if (data.status === 'COMPLETED' && lastActivityDateStr === todayStr) { 
           setAttendanceData(data); 
-          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config'].includes(prev)) ? prev : 'shift_locked'); 
+          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config', 'gamification'].includes(prev)) ? prev : 'shift_locked'); 
         } else { 
           setAttendanceData(null); 
-          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config'].includes(prev)) ? prev : 'checkin'); 
+          setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config', 'gamification'].includes(prev)) ? prev : 'checkin'); 
         }
       } else { 
         setAttendanceData(null); 
-        setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config'].includes(prev)) ? prev : 'checkin'); 
+        setView(prev => (['change_pin', 'recap', 'access_blocked', 'pass_challenge', 'config', 'gamification'].includes(prev)) ? prev : 'checkin'); 
       }
     }, (error) => { console.error("Snapshot error:", error); });
     
@@ -2158,6 +2826,15 @@ function App() {
                       <Fingerprint className="w-4 h-4" />
                       <span className="text-[8px] font-black uppercase">Keamanan</span>
                     </button>
+                    {gamificationConfig.enabled && (
+                      <button 
+                        onClick={() => setView('gamification')} 
+                        className="flex items-center gap-2 bg-yellow-500/20 backdrop-blur-md px-3 py-2 rounded-xl border border-yellow-300/20 hover:bg-yellow-500/30 transition-all shadow-sm"
+                      >
+                        <Trophy className="w-4 h-4 text-yellow-300" />
+                        <span className="text-[8px] font-black uppercase text-yellow-300">Poin</span>
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-4">
@@ -2255,6 +2932,36 @@ function App() {
             >
               <LogOut className="w-5 h-5"/> Kirim Laporan & Selesai
             </button>
+          </div>
+        )}
+
+        {view === 'gamification' && (
+          <div className="min-h-screen">
+            <div className="p-5 text-white flex justify-between items-center shadow-xl z-30 border-b border-white/20" 
+                 style={{ background: `linear-gradient(to right, ${themeColor}, ${adjustColor(themeColor, -40)})` }}>
+              <div className="flex items-center gap-4 text-left">
+                <button 
+                  onClick={() => setView('dashboard')} 
+                  className="p-3 bg-white/10 rounded-2xl hover:bg-white/30 transition-all"
+                >
+                  <ChevronLeft className="w-5 h-5" />
+                </button>
+                <div className="flex flex-col">
+                  <h1 className="font-black text-xl tracking-tighter uppercase leading-none">GAMIFICATION</h1>
+                  <span className="text-[8px] font-black bg-white/20 px-2 py-0.5 rounded-full mt-1 uppercase w-fit">
+                    Poin & Leaderboard
+                  </span>
+                </div>
+              </div>
+            </div>
+            <GamificationDashboard 
+              selectedEmployee={selectedEmployee}
+              userPoints={userPoints}
+              leaderboard={leaderboard}
+              employees={employees}
+              themeColor={themeColor}
+              fetchLeaderboard={fetchLeaderboard}
+            />
           </div>
         )}
 
@@ -2706,6 +3413,13 @@ function App() {
               >
                 Mitra
               </button>
+              <button 
+                onClick={() => setConfigTab('gamification')} 
+                className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'gamification' ? 'bg-white shadow-sm' : 'text-slate-500'}`} 
+                style={configTab === 'gamification' ? { color: themeColor } : {}}
+              >
+                Gamifikasi
+              </button>
             </div>
             
             <div className="space-y-6">
@@ -2839,32 +3553,6 @@ function App() {
                             )}
                           </div>
                         </div>
-                      </div>
-                      
-                      <div className="bg-slate-900 p-6 rounded-[2rem] shadow-2xl text-left overflow-hidden relative">
-                        <div className="flex justify-between items-center mb-4">
-                          <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">
-                            Deploy Script Code
-                          </span>
-                          <button 
-                            onClick={() => { 
-                              codeTextAreaRef.current.select(); 
-                              document.execCommand('copy'); 
-                              setMsg({type:'success', text:'Kode disalin!'}); 
-                              setTimeout(() => setMsg(null), 3000); 
-                            }} 
-                            className="text-[9px] font-black hover:text-white transition-colors leading-none" 
-                            style={{ color: themeColor }}
-                          >
-                            SALIN
-                          </button>
-                        </div>
-                        <textarea 
-                          readOnly 
-                          ref={codeTextAreaRef} 
-                          value={GAS_SCRIPT_CODE} 
-                          className="w-full h-32 bg-transparent text-[10px] font-mono text-slate-400 border-none outline-none resize-none leading-relaxed" 
-                        />
                       </div>
                     </div>
                   )}
@@ -3611,6 +4299,18 @@ function App() {
                   )}
                 </div>
               )}
+
+              {configTab === 'gamification' && (
+                <GamificationSettings 
+                  gamificationConfig={gamificationConfig}
+                  setGamificationConfig={setGamificationConfig}
+                  handleSaveGamificationConfig={handleSaveGamificationConfig}
+                  themeColor={themeColor}
+                  actionLoading={actionLoading}
+                  setMsg={setMsg}
+                  getCurrentLocation={getCurrentLocation}
+                />
+              )}
             </div>
           </div>
         )}
@@ -3907,7 +4607,7 @@ function App() {
           ACTIONS ENTERPRISE
         </p>
         <p className="text-[8px] font-bold text-slate-400 mt-2 leading-none tracking-[0.2em]">
-          v4.1.1 STABLE RELEASE
+          v5.0 STABLE RELEASE
         </p>
       </div>
     </div>

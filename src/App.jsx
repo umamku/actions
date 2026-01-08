@@ -1,264 +1,51 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { initializeApp } from 'firebase/app';
+import { auth, db, appId } from './lib/firebase';
 import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, updateDoc, serverTimestamp, deleteDoc, increment, addDoc, query, where, orderBy, getDocs } from 'firebase/firestore';
 import { CheckCircle, ListTodo, LogOut, Settings, Save, Loader2, Clipboard, User, Clock, ChevronLeft, Zap, Plus, Trash2, Check, ShieldCheck, ArrowRight, ChevronDown, RefreshCw, Users, History, Trophy, KeyRound, RotateCcw, Eye, EyeOff, TrendingUp, BarChart3, ChevronRight, Lightbulb, CloudDownload, BarChart, AlertTriangle, Fingerprint, ShieldEllipsis, Activity, CloudOff, Lock, UserPlus, UserMinus, SaveAll, Image as ImageIcon, ArrowUpFromLine, ArrowDownToLine, Timer, Unlock, CalendarClock, Key, CalendarPlus, CreditCard, FileX, Database, Trash, Gift, Copy, Bell } from 'lucide-react';
-
-// --- KONFIGURASI FIREBASE ---
-const firebaseConfig = {
-  apiKey: "AIzaSyC-yq8-WrafQPCfSsWk6LQAIT8-h3GofyQ",
-  authDomain: "actions-a8e4c.firebaseapp.com",
-  projectId: "actions-a8e4c",
-  storageBucket: "actions-a8e4c.firebasestorage.app",
-  messagingSenderId: "209650413048",
-  appId: "1:209650413048:web:249592156a9d07793cba0d",
-  measurementId: "G-PQJ4G00GRH"
-};
-
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-const appId = import.meta.env.VITE_APP_ID || "klien-demo";
+// --- NEW IMPORT ---
+import { 
+  TARGET_TYPES, 
+  DEFAULT_LOGO_URL, 
+  DEFAULT_THEME_COLOR,
+  generateReferralCode, 
+  fetchWithTimeout, 
+  adjustColor, 
+  ensureReadableColor, 
+  getDominantColor, 
+  hexToRgba, 
+  addTime, 
+  getLocalDateString, 
+  getInsight, 
+  hashString, 
+  verifySecurePassword,
+  calculateLevel,
+  calculateTargetProgress,
+  getTargetTypeLabel,
+  getTargetStatus,
+  resetTargetIfNeeded,
+  calculateDistance,
+  getCurrentLocation,
+  verifyLocation
+} from './utils/helpers';
+// Import UI Components (Modul 3 - BARU)
+import { 
+  VisualProgress, 
+  CircularProgress, 
+  CountdownDisplay, 
+  LogoComponent 
+} from './components/SharedComponents';
+import { 
+  GamificationDashboard, 
+  GamificationSettings 
+} from './components/Gamification';
 
 // --- CONSTANTS ---
 const DEFAULT_EMPLOYEES = [];
-const DEFAULT_LOGO_URL = "https://actions-mapeline.vercel.app/mapeline.png";
 const DEFAULT_SCRIPT_URL = "";
-const DEFAULT_THEME_COLOR = "#059669";
 const TRIAL_UNLOCK_PASSWORD = "KodeRahasia123!";
 const LEGACY_PASSWORD = "Mapeline123!";
 const DEFAULT_ADMIN_HASH = "5994471abb01112afcc18159f6cc74b4f511b99806da59b3caf5a9c173cacfc5";
-
-// --- HELPER FUNCTIONS ---
-const generateReferralCode = () => {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-  let result = 'ACT-';
-  for (let i = 0; i < 5; i++) result += chars.charAt(Math.floor(Math.random() * chars.length));
-  return result;
-};
-
-const fetchWithTimeout = async (resource, options = {}) => {
-  const { timeout = 15000 } = options;
-  const controller = new AbortController();
-  const id = setTimeout(() => controller.abort(), timeout);
-  try {
-    const response = await fetch(resource, { ...options, signal: controller.signal });
-    clearTimeout(id);
-    return response;
-  } catch (error) {
-    clearTimeout(id);
-    throw error;
-  }
-};
-
-const adjustColor = (color, amount) => {
-  if (!color) return '#000000';
-  return '#' + color.replace(/^#/, '').replace(/../g, color => ('0'+Math.min(255, Math.max(0, parseInt(color, 16) + amount)).toString(16)).slice(-2));
-}
-
-const ensureReadableColor = (hex) => {
-  if (!hex) return '#000000';
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  const luma = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-  return luma > 150 ? adjustColor(hex, -80) : hex;
-}
-
-const getDominantColor = (imageUrl) => {
-  return new Promise((resolve) => {
-    if (!imageUrl || imageUrl === DEFAULT_LOGO_URL) {
-      resolve(DEFAULT_THEME_COLOR);
-      return;
-    }
-    
-    const img = new Image();
-    img.crossOrigin = "Anonymous";
-    img.src = imageUrl;
-    
-    const timeout = setTimeout(() => {
-      resolve(DEFAULT_THEME_COLOR);
-    }, 5000);
-    
-    img.onload = () => {
-      clearTimeout(timeout);
-      try {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        canvas.width = 50; canvas.height = 50;
-        ctx.drawImage(img, 0, 0, 50, 50);
-        const imageData = ctx.getImageData(0, 0, 50, 50).data;
-        let r = 0, g = 0, b = 0, count = 0;
-        for (let i = 0; i < imageData.length; i += 4) {
-            const alpha = imageData[i + 3];
-            if (alpha < 128) continue;
-            const cr = imageData[i], cg = imageData[i + 1], cb = imageData[i + 2];
-            const brightness = (cr + cg + cb) / 3;
-            if (brightness > 240 || brightness < 15) continue;
-            r += cr; g += cg; b += cb; count++;
-        }
-        if (count === 0) { resolve(DEFAULT_THEME_COLOR); return; }
-        r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
-        let hex = "#" + ((1 << 24) + (r << 16) + (g << 8) + b).toString(16).slice(1);
-        resolve(ensureReadableColor(hex));
-      } catch (e) { resolve(DEFAULT_THEME_COLOR); }
-    };
-    img.onerror = () => {
-      clearTimeout(timeout);
-      resolve(DEFAULT_THEME_COLOR);
-    };
-  });
-};
-
-const hexToRgba = (hex, alpha) => {
-  if (!hex) return `rgba(0,0,0,${alpha})`;
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
-}
-
-const addTime = (baseDateStr, type, amount) => {
-  const base = baseDateStr ? new Date(baseDateStr) : new Date();
-  if (isNaN(base.getTime())) return new Date().toISOString().slice(0, 16);
-  const result = new Date(base);
-  if (type === 'days') result.setDate(result.getDate() + amount);
-  if (type === 'months') result.setMonth(result.getMonth() + amount);
-  if (type === 'years') result.setFullYear(result.getFullYear() + amount);
-  const offset = result.getTimezoneOffset() * 60000;
-  return (new Date(result - offset)).toISOString().slice(0, 16);
-};
-
-const getLocalDateString = (dateObj) => {
-  const d = dateObj || new Date();
-  const year = d.getFullYear();
-  const month = (d.getMonth() + 1).toString().padStart(2, '0');
-  const day = d.getDate().toString().padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
-
-const getInsight = (score) => {
-  if (score >= 90) return { title: "Performa Elit", text: "Target tercapai maksimal.", color: "text-white", subColor: "text-emerald-100", bg: "bg-gradient-to-br from-emerald-600 to-emerald-800", border: "border-emerald-500", shadow: "shadow-emerald-500/40", barColor: "bg-emerald-400", hex: "#34d399", bgCircle: "rgba(255,255,255,0.2)" };
-  if (score >= 70) return { title: "Sangat Solid", text: "Kerja tim yang produktif.", color: "text-white", subColor: "text-blue-100", bg: "bg-gradient-to-br from-blue-600 to-blue-800", border: "border-blue-500", shadow: "shadow-blue-500/40", barColor: "bg-blue-400", hex: "#60a5fa", bgCircle: "rgba(255,255,255,0.2)" };
-  if (score >= 50) return { title: "Cukup Stabil", text: "Pertahankan konsistensi.", color: "text-white", subColor: "text-orange-100", bg: "bg-gradient-to-br from-orange-500 to-orange-700", border: "border-orange-400", shadow: "shadow-orange-500/40", barColor: "bg-orange-300", hex: "#fdba74", bgCircle: "rgba(255,255,255,0.2)" };
-  return { title: "Butuh Evaluasi", text: "Tingkatkan penyelesaian tugas.", color: "text-white", subColor: "text-red-100", bg: "bg-gradient-to-br from-red-600 to-red-800", border: "border-red-500", shadow: "shadow-red-500/40", barColor: "bg-red-400", hex: "#f87171", bgCircle: "rgba(255,255,255,0.2)" };
-};
-
-const hashString = async (str) => {
-  const msgBuffer = new TextEncoder().encode(str);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-};
-
-const verifySecurePassword = async (input, storedHash) => {
-  if (input === TRIAL_UNLOCK_PASSWORD || input === LEGACY_PASSWORD) return true;
-  if (!storedHash) return false;
-  if (input === storedHash) return true;
-  try {
-    const inputHash = await hashString(input);
-    if (inputHash === storedHash) return true;
-  } catch(e) { console.error("Hashing failed:", e); }
-  return false;
-};
-
-// --- HELPER FUNCTIONS GAMIFICATION ---
-const calculateDistance = (lat1, lon1, lat2, lon2) => {
-  const R = 6371000;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLon = (lon2 - lon1) * Math.PI / 180;
-  const a = 
-    Math.sin(dLat/2) * Math.sin(dLat/2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-    Math.sin(dLon/2) * Math.sin(dLon/2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-  return R * c;
-};
-
-const getCurrentLocation = () => {
-  return new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject(new Error('Geolocation tidak didukung'));
-      return;
-    }
-    
-    const options = {
-      enableHighAccuracy: true,
-      timeout: 10000,
-      maximumAge: 0
-    };
-    
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        resolve({
-          lat: position.coords.latitude,
-          lng: position.coords.longitude,
-          accuracy: position.coords.accuracy,
-          timestamp: position.timestamp
-        });
-      },
-      (error) => {
-        let errorMessage = '';
-        switch(error.code) {
-          case error.PERMISSION_DENIED:
-            errorMessage = 'Izin lokasi ditolak.';
-            break;
-          case error.POSITION_UNAVAILABLE:
-            errorMessage = 'Informasi lokasi tidak tersedia.';
-            break;
-          case error.TIMEOUT:
-            errorMessage = 'Request lokasi timeout.';
-            break;
-          default:
-            errorMessage = 'Error tidak diketahui.';
-        }
-        reject(new Error(errorMessage));
-      },
-      options
-    );
-  });
-};
-
-const verifyLocation = async (gamificationConfig) => {
-  try {
-    const currentLocation = await getCurrentLocation();
-    
-    if (!gamificationConfig.companyLat || !gamificationConfig.companyLng) {
-      return { valid: true, distance: 0, location: currentLocation };
-    }
-    
-    const distance = calculateDistance(
-      currentLocation.lat,
-      currentLocation.lng,
-      gamificationConfig.companyLat,
-      gamificationConfig.companyLng
-    );
-    
-    const isValid = distance <= gamificationConfig.locationRadius;
-    
-    return {
-      valid: isValid,
-      distance: Math.round(distance),
-      location: currentLocation,
-      accuracy: currentLocation.accuracy
-    };
-  } catch (error) {
-    return {
-      valid: false,
-      error: error.message,
-      location: null
-    };
-  }
-};
-
-const calculateLevel = (points) => {
-  if (points < 100) return { level: 1, name: "Pemula", nextLevelPoints: 100 };
-  if (points < 300) return { level: 2, name: "Junior", nextLevelPoints: 300 };
-  if (points < 600) return { level: 3, name: "Senior", nextLevelPoints: 600 };
-  if (points < 1000) return { level: 4, name: "Expert", nextLevelPoints: 1000 };
-  if (points < 1500) return { level: 5, name: "Master", nextLevelPoints: 1500 };
-  return { level: 6, name: "Legend", nextLevelPoints: Infinity };
-};
 
 const awardPoints = async (appId, db, userId, type, metadata = {}, gamificationConfig) => {
   if (!gamificationConfig.enabled) return 0;
@@ -306,6 +93,9 @@ const awardPoints = async (appId, db, userId, type, metadata = {}, gamificationC
     case 'EARLY_CHECKIN':
       pointsToAdd = 15;
       break;
+    case 'TARGET_ACHIEVED':
+      pointsToAdd = 30; // Bonus points for achieving targets
+      break;
     default:
       pointsToAdd = 5;
   }
@@ -349,228 +139,111 @@ const awardPoints = async (appId, db, userId, type, metadata = {}, gamificationC
   return { points: pointsToAdd, data: updatedData };
 };
 
-const getActivityIcon = (type) => {
-  switch(type) {
-    case 'ATTENDANCE': return <User className="w-5 h-5" />;
-    case 'TASK_COMPLETED': return <CheckCircle className="w-5 h-5" />;
-    case 'STREAK': return <Zap className="w-5 h-5" />;
-    case 'PERFECT_DAY': return <Trophy className="w-5 h-5" />;
-    case 'EARLY_CHECKIN': return <Clock className="w-5 h-5" />;
-    default: return <Activity className="w-5 h-5" />;
-  }
-};
-
-const getActivityIconColor = (type) => {
-  switch(type) {
-    case 'ATTENDANCE': return 'bg-blue-100 text-blue-600';
-    case 'TASK_COMPLETED': return 'bg-emerald-100 text-emerald-600';
-    case 'STREAK': return 'bg-orange-100 text-orange-600';
-    case 'PERFECT_DAY': return 'bg-yellow-100 text-yellow-600';
-    case 'EARLY_CHECKIN': return 'bg-purple-100 text-purple-600';
-    default: return 'bg-slate-100 text-slate-600';
-  }
-};
-
-const getActivityDescription = (type) => {
-  switch(type) {
-    case 'ATTENDANCE': return 'Check-in harian';
-    case 'TASK_COMPLETED': return 'Menyelesaikan task';
-    case 'STREAK': return 'Streak berkelanjutan';
-    case 'PERFECT_DAY': return 'Semua task selesai';
-    case 'EARLY_CHECKIN': return 'Check-in lebih awal';
-    default: return 'Aktivitas';
-  }
-};
-
-// --- COMPONENTS ---
-const VisualProgress = ({ percent, colorClass = "bg-emerald-500" }) => (
-  <div className="w-full h-3 bg-white/20 rounded-full overflow-hidden mt-3 border border-white/10 shadow-inner">
-    <div className={`h-full ${colorClass} transition-all duration-1000 ease-out rounded-full shadow-[0_0_10px_rgba(255,255,255,0.4)]`} style={{ width: `${percent}%` }}></div>
-  </div>
-);
-
-const CircularProgress = ({ percent, color = "#10b981", bgStroke = "#e2e8f0" }) => {
-  const radius = 36;
-  const circumference = 2 * Math.PI * radius;
-  const strokeDashoffset = circumference - (percent / 100) * circumference;
-  return (
-    <div className="relative inline-flex items-center justify-center">
-      <svg className="w-20 h-20 transform -rotate-90 drop-shadow-lg">
-        <circle cx="40" cy="40" r={radius} stroke={bgStroke} strokeWidth="8" fill="transparent" />
-        <circle cx="40" cy="40" r={radius} stroke={color} strokeWidth="8" strokeDasharray={circumference} style={{ strokeDashoffset, transition: 'stroke-dashoffset 1s ease-out' }} strokeLinecap="round" fill="transparent" />
-      </svg>
-      <span className="absolute text-sm font-black text-white">{percent}%</span>
-    </div>
-  );
-};
-
-const CountdownDisplay = ({ targetDate, label = "Sisa Waktu" }) => {
-  const [timeLeft, setTimeLeft] = useState('');
-  useEffect(() => {
-    const calculateTime = () => {
-      const now = new Date();
-      const end = new Date(targetDate);
-      const diff = end - now;
-      if (diff <= 0) return 'Kadaluarsa';
-      const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-      return `${days} Hari ${hours} Jam ${minutes} Menit`;
-    };
-    setTimeLeft(calculateTime());
-    const interval = setInterval(() => setTimeLeft(calculateTime()), 60000);
-    return () => clearInterval(interval);
-  }, [targetDate]);
-  return <span className="font-mono font-bold text-[10px] opacity-90">{label}: {timeLeft}</span>;
-};
-
-const LogoComponent = ({ logoUrl, themeColor, size = "normal" }) => {
-  const [error, setError] = useState(false);
-  useEffect(() => { setError(false); }, [logoUrl]);
-  if (error) return <div className={`rounded-3xl flex items-center justify-center text-white font-black leading-none ${size === 'large' ? 'w-32 h-32 text-6xl' : 'w-10 h-10'}`} style={{ backgroundColor: themeColor }}>A</div>;
-  return <img src={logoUrl} alt="Logo" onError={() => setError(true)} className={`${size === "large" ? "w-32 h-auto drop-shadow-2xl" : "w-10 h-10 object-contain"}`} />;
-};
-
-const GamificationDashboard = ({ selectedEmployee, userPoints, leaderboard, employees, themeColor, fetchLeaderboard }) => {
-  const currentUserPoints = userPoints[selectedEmployee?.id];
-  const currentUserRank = leaderboard.find(item => item.userId === selectedEmployee?.id)?.rank || '-';
+// Target Component
+const TargetComponent = ({ target, employeeName, onUpdate, onDelete }) => {
+  const [showEdit, setShowEdit] = useState(false);
+  const [editData, setEditData] = useState(target);
+  
+  if (!target) return null;
+  
+  const progress = calculateTargetProgress(target.targetValue, target.currentValue);
+  const status = getTargetStatus(target);
+  const isExpired = status === 'expired';
+  
+  const handleSave = () => {
+    onUpdate(editData);
+    setShowEdit(false);
+  };
   
   return (
-    <div className="px-6 py-8 space-y-8 animate-in fade-in pb-20">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-black text-slate-900">Poin & Prestasi</h2>
-        <button 
-          onClick={fetchLeaderboard}
-          className="flex items-center gap-2 px-4 py-2 bg-emerald-50 text-emerald-600 rounded-xl font-bold text-sm"
-        >
-          <RefreshCw className="w-4 h-4" /> Refresh
-        </button>
-      </div>
-      
-      {currentUserPoints && (
-        <div className="bg-gradient-to-r from-emerald-500 to-teal-600 rounded-[2.5rem] p-8 text-white shadow-2xl">
-          <div className="flex justify-between items-start mb-6">
-            <div>
-              <p className="text-emerald-100 text-sm font-bold mb-2">Rank #{currentUserRank}</p>
-              <h3 className="text-3xl font-black mb-2">{selectedEmployee?.name}</h3>
-              <div className="flex items-center gap-3">
-                <div className="bg-white/20 px-3 py-1 rounded-full text-sm font-bold">
-                  Level {currentUserPoints.level}
-                </div>
-                <div className="text-sm font-bold">
-                  🔥 {currentUserPoints.streak} hari streak
-                </div>
-              </div>
-            </div>
-            <div className="text-right">
-              <div className="text-5xl font-black">{currentUserPoints.points}</div>
-              <p className="text-emerald-100">Total Poin</p>
-            </div>
+    <div className={`p-4 rounded-2xl ${isExpired ? 'bg-red-50 border border-red-200' : 'bg-white border border-slate-100'} shadow-sm`}>
+      <div className="flex justify-between items-start mb-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <h4 className="text-sm font-black text-slate-800">{target.title}</h4>
+            <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full ${isExpired ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+              {getTargetTypeLabel(target.type)}
+            </span>
           </div>
-          
-          <div className="mb-4">
-            <div className="flex justify-between text-sm font-bold mb-2">
-              <span>Progress ke Level {currentUserPoints.level + 1}</span>
-              <span>{currentUserPoints.points}/{calculateLevel(currentUserPoints.points).nextLevelPoints}</span>
-            </div>
-            <div className="w-full h-4 bg-white/30 rounded-full overflow-hidden">
-              <div 
-                className="h-full bg-yellow-400 rounded-full transition-all duration-1000"
-                style={{ 
-                  width: `${(currentUserPoints.points / calculateLevel(currentUserPoints.points).nextLevelPoints) * 100}%` 
-                }}
-              ></div>
-            </div>
-          </div>
-          
-          <div className="grid grid-cols-3 gap-4 mt-6">
-            <div className="text-center">
-              <div className="text-2xl font-black">{currentUserPoints.history?.filter(h => 
-                new Date(h.timestamp).toDateString() === new Date().toDateString()
-              ).length || 0}</div>
-              <p className="text-sm opacity-80">Aktivitas Hari Ini</p>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-black">{currentUserPoints.achievements?.length || 0}</div>
-              <p className="text-sm opacity-80">Pencapaian</p>
-            </div>
-            <div className="text-center">
-              <div className="text-2xl font-black">
-                {currentUserPoints.history?.filter(h => h.type === 'TASK_COMPLETED').length || 0}
-              </div>
-              <p className="text-sm opacity-80">Task Selesai</p>
-            </div>
+          <p className="text-xs text-slate-600 mb-2">{target.description}</p>
+          <div className="flex items-center justify-between text-[10px] text-slate-500">
+            <span>Target: {target.targetValue}</span>
+            <span>Tercapai: {target.currentValue}</span>
           </div>
         </div>
-      )}
+        <div className="flex gap-1">
+          <button onClick={() => setShowEdit(!showEdit)} className="p-1.5 text-slate-400 hover:text-blue-500">
+            <Settings className="w-4 h-4" />
+          </button>
+          <button onClick={onDelete} className="p-1.5 text-slate-400 hover:text-red-500">
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
       
-      <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 p-6">
-        <div className="flex items-center justify-between mb-6">
-          <h3 className="text-xl font-black text-slate-900">Leaderboard</h3>
-          <select className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm">
-            <option>Bulan Ini</option>
-            <option>Minggu Ini</option>
-            <option>Sepanjang Waktu</option>
-          </select>
+      <div className="space-y-2">
+        <div className="flex justify-between text-[10px] font-bold">
+          <span>Progress</span>
+          <span>{progress}%</span>
+        </div>
+        <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+          <div 
+            className={`h-full ${isExpired ? 'bg-red-500' : progress >= 100 ? 'bg-emerald-500' : 'bg-blue-500'} transition-all duration-500`}
+            style={{ width: `${progress}%` }}
+          ></div>
         </div>
         
-        <div className="space-y-4">
-          {leaderboard.slice(0, 10).map((player, index) => {
-            const isCurrentUser = player.userId === selectedEmployee?.id;
-            return (
-              <div 
-                key={player.userId} 
-                className={`p-4 rounded-2xl flex items-center justify-between ${isCurrentUser ? 'bg-emerald-50 border-2 border-emerald-200' : 'bg-slate-50'}`}
-              >
-                <div className="flex items-center">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold ${index < 3 ? 'bg-yellow-500 text-white' : 'bg-slate-200'}`}>
-                    {player.rank}
-                  </div>
-                  <div className="ml-4">
-                    <p className={`font-bold ${isCurrentUser ? 'text-emerald-600' : 'text-slate-900'}`}>
-                      {employees.find(e => e.id === player.userId)?.name || player.userId}
-                      {isCurrentUser && <span className="ml-2 text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded">Anda</span>}
-                    </p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-xs font-bold text-emerald-600">Level {player.level}</span>
-                      <span className="text-xs text-slate-500">•</span>
-                      <span className="text-xs text-slate-500">{player.streak} hari streak</span>
-                    </div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-2xl font-black text-slate-900">{player.points}</div>
-                  <div className="text-xs text-slate-500">poin</div>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        {target.deadline && target.type === TARGET_TYPES.CUSTOM_DATE && (
+          <div className="text-[10px] text-slate-400 mt-1">
+            Tenggat: {new Date(target.deadline).toLocaleDateString('id-ID')}
+            {isExpired && <span className="text-red-500 font-bold ml-2">(Kadaluarsa)</span>}
+          </div>
+        )}
       </div>
       
-      {currentUserPoints?.history && currentUserPoints.history.length > 0 && (
-        <div className="bg-white rounded-[2.5rem] shadow-xl border border-slate-100 p-6">
-          <h3 className="text-xl font-black text-slate-900 mb-6">Aktivitas Terakhir</h3>
-          <div className="space-y-3">
-            {currentUserPoints.history.slice(-5).reverse().map((activity, idx) => (
-              <div key={idx} className="flex items-center justify-between p-4 bg-slate-50 rounded-xl">
-                <div className="flex items-center">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${getActivityIconColor(activity.type)}`}>
-                    {getActivityIcon(activity.type)}
-                  </div>
-                  <div className="ml-4">
-                    <p className="font-bold text-slate-900">{getActivityDescription(activity.type)}</p>
-                    <p className="text-sm text-slate-500">
-                      {new Date(activity.timestamp).toLocaleTimeString('id-ID', {hour: '2-digit', minute: '2-digit'})}
-                    </p>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-lg font-black text-emerald-600">+{activity.points}</div>
-                  <div className="text-xs text-slate-500">poin</div>
-                </div>
-              </div>
-            ))}
+      {showEdit && (
+        <div className="mt-4 p-3 bg-slate-50 rounded-xl space-y-3 animate-in slide-in-from-top-2">
+          <input
+            type="text"
+            value={editData.title}
+            onChange={e => setEditData({...editData, title: e.target.value})}
+            className="w-full p-2 border border-slate-200 rounded-lg text-sm"
+            placeholder="Judul Target"
+          />
+          <textarea
+            value={editData.description}
+            onChange={e => setEditData({...editData, description: e.target.value})}
+            className="w-full p-2 border border-slate-200 rounded-lg text-sm"
+            placeholder="Deskripsi"
+            rows="2"
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-[10px] font-bold text-slate-500">Target Value</label>
+              <input
+                type="number"
+                value={editData.targetValue}
+                onChange={e => setEditData({...editData, targetValue: parseInt(e.target.value) || 0})}
+                className="w-full p-2 border border-slate-200 rounded-lg text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] font-bold text-slate-500">Current Value</label>
+              <input
+                type="number"
+                value={editData.currentValue}
+                onChange={e => setEditData({...editData, currentValue: parseInt(e.target.value) || 0})}
+                className="w-full p-2 border border-slate-200 rounded-lg text-sm"
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={handleSave} className="flex-1 bg-blue-500 text-white py-2 rounded-lg text-sm font-bold">
+              Simpan
+            </button>
+            <button onClick={() => setShowEdit(false)} className="flex-1 bg-slate-200 text-slate-600 py-2 rounded-lg text-sm font-bold">
+              Batal
+            </button>
           </div>
         </div>
       )}
@@ -578,261 +251,288 @@ const GamificationDashboard = ({ selectedEmployee, userPoints, leaderboard, empl
   );
 };
 
-const GamificationSettings = ({ 
-  gamificationConfig, 
-  setGamificationConfig, 
-  handleSaveGamificationConfig, 
-  themeColor, 
+// Target Settings Component
+const TargetSettings = ({ 
+  employees, 
+  userTargets, 
+  setUserTargets, 
+  handleSaveTargets,
   actionLoading,
-  setMsg,
-  getCurrentLocation 
+  themeColor 
 }) => {
-  const [testLoading, setTestLoading] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState('');
+  const [newTarget, setNewTarget] = useState({
+    title: '',
+    description: '',
+    type: TARGET_TYPES.DAILY,
+    targetValue: 0,
+    currentValue: 0,
+    deadline: '',
+    lastReset: new Date().toISOString()
+  });
 
-  const handleTestLocation = async () => {
-    setTestLoading(true);
-    try {
-      const result = await verifyLocation(gamificationConfig);
-      
-      if (result.valid) {
-        setMsg({ 
-          type: 'success', 
-          text: `Lokasi valid! Jarak: ${result.distance}m dari kantor. Akurasi: ${result.accuracy?.toFixed(1)}m` 
-        });
-      } else {
-        setMsg({ 
-          type: 'error', 
-          text: `Lokasi tidak valid! ${result.error || `Jarak: ${result.distance}m (max ${gamificationConfig.locationRadius}m)`}` 
-        });
-      }
-    } catch (error) {
-      setMsg({ type: 'error', text: error.message });
-    } finally {
-      setTestLoading(false);
+  const handleAddTarget = () => {
+    if (!selectedEmployee || !newTarget.title || !newTarget.targetValue) {
+      alert('Harap pilih karyawan dan isi judul serta nilai target');
+      return;
     }
+
+    const employeeTargets = userTargets[selectedEmployee] || [];
+    const updatedTargets = [...employeeTargets, {
+      ...newTarget,
+      id: Date.now().toString(),
+      createdAt: new Date().toISOString()
+    }];
+
+    setUserTargets(prev => ({
+      ...prev,
+      [selectedEmployee]: updatedTargets
+    }));
+
+    setNewTarget({
+      title: '',
+      description: '',
+      type: TARGET_TYPES.DAILY,
+      targetValue: 0,
+      currentValue: 0,
+      deadline: '',
+      lastReset: new Date().toISOString()
+    });
   };
+
+  const handleUpdateTarget = (employeeId, targetId, updatedData) => {
+    const employeeTargets = userTargets[employeeId] || [];
+    const updatedTargets = employeeTargets.map(target => 
+      target.id === targetId ? { ...target, ...updatedData } : target
+    );
+    
+    setUserTargets(prev => ({
+      ...prev,
+      [employeeId]: updatedTargets
+    }));
+  };
+
+  const handleDeleteTarget = (employeeId, targetId) => {
+    if (!window.confirm('Hapus target ini?')) return;
+    
+    const employeeTargets = userTargets[employeeId] || [];
+    const updatedTargets = employeeTargets.filter(target => target.id !== targetId);
+    
+    setUserTargets(prev => ({
+      ...prev,
+      [employeeId]: updatedTargets
+    }));
+  };
+
+  const handleUpdateCurrentValue = (employeeId, targetId, newValue) => {
+    const employeeTargets = userTargets[employeeId] || [];
+    const updatedTargets = employeeTargets.map(target => {
+      if (target.id === targetId) {
+        return { ...target, currentValue: parseInt(newValue) || 0 };
+      }
+      return target;
+    });
+    
+    setUserTargets(prev => ({
+      ...prev,
+      [employeeId]: updatedTargets
+    }));
+  };
+
+  const selectedEmployeeTargets = selectedEmployee ? userTargets[selectedEmployee] || [] : [];
 
   return (
     <div className="space-y-6 animate-in fade-in">
-      <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-600 flex items-center justify-center">
-              <Trophy className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-black text-slate-900 uppercase">Sistem Gamifikasi</h3>
-              <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                Status: {gamificationConfig.enabled ? 'AKTIF' : 'NONAKTIF'}
-              </p>
-            </div>
+      <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-6">
+        <h3 className="text-lg font-black text-slate-900">Pengaturan Target Karyawan</h3>
+        
+        <div className="space-y-4">
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
+              Pilih Karyawan
+            </label>
+            <select 
+              value={selectedEmployee} 
+              onChange={(e) => setSelectedEmployee(e.target.value)}
+              className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500"
+            >
+              <option value="">Pilih Karyawan</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id}>{emp.name}</option>
+              ))}
+            </select>
           </div>
-          <button 
-            onClick={() => setGamificationConfig(prev => ({ ...prev, enabled: !prev.enabled }))} 
-            className={`w-14 h-8 rounded-full p-1 transition-all ${gamificationConfig.enabled ? 'bg-emerald-500' : 'bg-slate-200'}`}
-          >
-            <div className={`w-6 h-6 bg-white rounded-full shadow-sm transform transition-all ${gamificationConfig.enabled ? 'translate-x-6' : ''}`}></div>
-          </button>
+          
+          {selectedEmployee && (
+            <>
+              <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100">
+                <h4 className="text-sm font-black text-emerald-800 mb-2">
+                  Tambah Target Baru untuk {employees.find(e => e.id === selectedEmployee)?.name}
+                </h4>
+                
+                <div className="space-y-3">
+                  <input
+                    type="text"
+                    placeholder="Judul Target"
+                    value={newTarget.title}
+                    onChange={e => setNewTarget({...newTarget, title: e.target.value})}
+                    className="w-full p-3 border border-slate-200 rounded-lg text-sm"
+                  />
+                  
+                  <textarea
+                    placeholder="Deskripsi Target (opsional)"
+                    value={newTarget.description}
+                    onChange={e => setNewTarget({...newTarget, description: e.target.value})}
+                    className="w-full p-3 border border-slate-200 rounded-lg text-sm"
+                    rows="2"
+                  />
+                  
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500">Target Value</label>
+                      <input
+                        type="number"
+                        value={newTarget.targetValue}
+                        onChange={e => setNewTarget({...newTarget, targetValue: parseInt(e.target.value) || 0})}
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm"
+                        min="0"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500">Jenis Target</label>
+                      <select
+                        value={newTarget.type}
+                        onChange={e => setNewTarget({...newTarget, type: e.target.value})}
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm"
+                      >
+                        <option value={TARGET_TYPES.DAILY}>Harian</option>
+                        <option value={TARGET_TYPES.WEEKLY}>Mingguan</option>
+                        <option value={TARGET_TYPES.MONTHLY}>Bulanan</option>
+                        <option value={TARGET_TYPES.QUARTERLY}>Triwulan</option>
+                        <option value={TARGET_TYPES.YEARLY}>Tahunan</option>
+                        <option value={TARGET_TYPES.CUSTOM_DATE}>Tanggal Khusus</option>
+                        <option value={TARGET_TYPES.NO_DEADLINE}>Tanpa Tenggat</option>
+                      </select>
+                    </div>
+                  </div>
+                  
+                  {newTarget.type === TARGET_TYPES.CUSTOM_DATE && (
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-500">Tanggal Tenggat</label>
+                      <input
+                        type="datetime-local"
+                        value={newTarget.deadline}
+                        onChange={e => setNewTarget({...newTarget, deadline: e.target.value})}
+                        className="w-full p-3 border border-slate-200 rounded-lg text-sm"
+                      />
+                    </div>
+                  )}
+                  
+                  <button
+                    onClick={handleAddTarget}
+                    className="w-full py-3 bg-emerald-500 text-white rounded-lg font-bold text-sm hover:bg-emerald-600 transition-colors"
+                  >
+                    Tambah Target
+                  </button>
+                </div>
+              </div>
+              
+              <div className="space-y-4">
+                <h4 className="text-sm font-black text-slate-900">Target Aktif ({selectedEmployeeTargets.length})</h4>
+                
+                {selectedEmployeeTargets.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                    Belum ada target untuk karyawan ini
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
+                    {selectedEmployeeTargets.map(target => {
+                      const progress = calculateTargetProgress(target.targetValue, target.currentValue);
+                      const status = getTargetStatus(target);
+                      const isExpired = status === 'expired';
+                      
+                      return (
+                        <div key={target.id} className={`p-4 rounded-xl ${isExpired ? 'bg-red-50 border border-red-200' : 'bg-white border border-slate-100'} shadow-sm`}>
+                          <div className="flex justify-between items-start mb-3">
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <h5 className="text-sm font-black text-slate-800">{target.title}</h5>
+                                <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full ${isExpired ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                                  {getTargetTypeLabel(target.type)}
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-600 mb-2">{target.description}</p>
+                            </div>
+                            <button 
+                              onClick={() => handleDeleteTarget(selectedEmployee, target.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    value={target.currentValue}
+                                    onChange={e => handleUpdateCurrentValue(selectedEmployee, target.id, e.target.value)}
+                                    className="w-20 p-2 border border-slate-200 rounded-lg text-sm text-center"
+                                    min="0"
+                                  />
+                                  <span className="text-sm text-slate-600">/ {target.targetValue}</span>
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <span className={`text-sm font-bold ${progress >= 100 ? 'text-emerald-600' : 'text-blue-600'}`}>
+                                  {progress}%
+                                </span>
+                              </div>
+                            </div>
+                            
+                            <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div 
+                                className={`h-full ${isExpired ? 'bg-red-500' : progress >= 100 ? 'bg-emerald-500' : 'bg-blue-500'} transition-all duration-500`}
+                                style={{ width: `${progress}%` }}
+                              ></div>
+                            </div>
+                            
+                            <div className="flex justify-between text-[10px] text-slate-500">
+                              <span>Dibuat: {new Date(target.createdAt).toLocaleDateString('id-ID')}</span>
+                              {target.deadline && target.type === TARGET_TYPES.CUSTOM_DATE && (
+                                <span className={isExpired ? 'text-red-500 font-bold' : ''}>
+                                  Tenggat: {new Date(target.deadline).toLocaleDateString('id-ID')}
+                                </span>
+                              )}
+                            </div>
+                            
+                            {status === 'needs_reset' && (
+                              <div className="text-[10px] text-amber-600 bg-amber-50 p-2 rounded-lg">
+                                ⚠️ Target periode ini sudah berakhir. Reset untuk periode baru.
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
       
-      {gamificationConfig.enabled && (
-        <>
-          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-6">
-            <h3 className="text-lg font-black text-slate-900">Pengaturan Poin</h3>
-            
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                  Poin per Kehadiran
-                </label>
-                <input 
-                  type="number" 
-                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                  value={gamificationConfig.pointsPerAttendance}
-                  onChange={e => setGamificationConfig(prev => ({ 
-                    ...prev, 
-                    pointsPerAttendance: parseInt(e.target.value) || 0 
-                  }))}
-                />
-              </div>
-              
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                  Poin per Task Selesai
-                </label>
-                <input 
-                  type="number" 
-                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                  value={gamificationConfig.pointsPerTask}
-                  onChange={e => setGamificationConfig(prev => ({ 
-                    ...prev, 
-                    pointsPerTask: parseInt(e.target.value) || 0 
-                  }))}
-                />
-              </div>
-              
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                  Poin Streak
-                </label>
-                <input 
-                  type="number" 
-                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                  value={gamificationConfig.pointsPerStreak}
-                  onChange={e => setGamificationConfig(prev => ({ 
-                    ...prev, 
-                    pointsPerStreak: parseInt(e.target.value) || 0 
-                  }))}
-                />
-              </div>
-              
-              <div>
-                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                  Maks Poin per Hari
-                </label>
-                <input 
-                  type="number" 
-                  className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                  value={gamificationConfig.maxPointsPerDay}
-                  onChange={e => setGamificationConfig(prev => ({ 
-                    ...prev, 
-                    maxPointsPerDay: parseInt(e.target.value) || 0 
-                  }))}
-                />
-              </div>
-            </div>
-          </div>
-          
-          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center">
-                  <span className="text-lg">📍</span>
-                </div>
-                <div>
-                  <h3 className="text-sm font-black text-slate-900 uppercase">Verifikasi Lokasi</h3>
-                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
-                    Cegah kecurangan absensi
-                  </p>
-                </div>
-              </div>
-              <button 
-                onClick={() => setGamificationConfig(prev => ({ ...prev, locationVerification: !prev.locationVerification }))} 
-                className={`w-14 h-8 rounded-full p-1 transition-all ${gamificationConfig.locationVerification ? 'bg-blue-500' : 'bg-slate-200'}`}
-              >
-                <div className={`w-6 h-6 bg-white rounded-full shadow-sm transform transition-all ${gamificationConfig.locationVerification ? 'translate-x-6' : ''}`}></div>
-              </button>
-            </div>
-            
-            {gamificationConfig.locationVerification && (
-              <div className="space-y-4 pt-4 border-t border-slate-50 animate-in slide-in-from-top-2">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                    Radius Valid (meter)
-                  </label>
-                  <input 
-                    type="number" 
-                    className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                    value={gamificationConfig.locationRadius}
-                    onChange={e => setGamificationConfig(prev => ({ 
-                      ...prev, 
-                      locationRadius: parseInt(e.target.value) || 100 
-                    }))}
-                  />
-                </div>
-                
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                      Latitude Kantor
-                    </label>
-                    <input 
-                      type="number" 
-                      step="any"
-                      className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                      value={gamificationConfig.companyLat || ''}
-                      onChange={e => setGamificationConfig(prev => ({ 
-                        ...prev, 
-                        companyLat: parseFloat(e.target.value) 
-                      }))}
-                      placeholder="-6.2088"
-                    />
-                  </div>
-                  
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">
-                      Longitude Kantor
-                    </label>
-                    <input 
-                      type="number" 
-                      step="any"
-                      className="w-full p-3 border-2 border-slate-100 rounded-xl font-bold text-slate-700 outline-none focus:border-emerald-500" 
-                      value={gamificationConfig.companyLng || ''}
-                      onChange={e => setGamificationConfig(prev => ({ 
-                        ...prev, 
-                        companyLng: parseFloat(e.target.value) 
-                      }))}
-                      placeholder="106.8456"
-                    />
-                  </div>
-                </div>
-                
-                <div className="flex gap-2">
-                  <button 
-                    onClick={async () => {
-                      try {
-                        const location = await getCurrentLocation();
-                        setGamificationConfig(prev => ({
-                          ...prev,
-                          companyLat: location.lat,
-                          companyLng: location.lng
-                        }));
-                        setMsg({ type: 'success', text: 'Lokasi kantor berhasil diset!' });
-                      } catch (error) {
-                        setMsg({ type: 'error', text: error.message });
-                      }
-                    }}
-                    className="flex-1 py-3 bg-blue-100 text-blue-600 rounded-xl font-bold text-sm"
-                  >
-                    📍 Gunakan Lokasi Saat Ini
-                  </button>
-                  
-                  <button 
-                    onClick={() => {
-                      const url = `https://www.google.com/maps?q=${gamificationConfig.companyLat},${gamificationConfig.companyLng}`;
-                      window.open(url, '_blank');
-                    }}
-                    disabled={!gamificationConfig.companyLat || !gamificationConfig.companyLng}
-                    className="flex-1 py-3 bg-emerald-100 text-emerald-600 rounded-xl font-bold text-sm"
-                  >
-                    🗺️ Lihat di Google Maps
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-          
-          <div className="bg-white p-6 rounded-[2.5rem] shadow-xl border-2 border-slate-100 space-y-4">
-            <h3 className="text-lg font-black text-slate-900">Test Lokasi</h3>
-            <button 
-              onClick={handleTestLocation}
-              disabled={testLoading}
-              className="w-full py-4 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-xl font-bold shadow-lg active:scale-95 transition-all"
-            >
-              {testLoading ? <Loader2 className="w-5 h-5 animate-spin mx-auto" /> : 'Test Lokasi Saat Ini'}
-            </button>
-          </div>
-          
-          <button 
-            onClick={handleSaveGamificationConfig}
-            className="w-full text-white py-5 rounded-2xl font-black text-xs uppercase shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2" 
-            style={{ backgroundColor: themeColor }}
-          >
-            <Save className="w-4 h-4" /> Simpan Pengaturan Gamifikasi
-          </button>
-        </>
-      )}
+      <button 
+        onClick={handleSaveTargets}
+        disabled={actionLoading}
+        className="w-full text-white py-5 rounded-2xl font-black text-xs uppercase shadow-lg active:scale-95 transition-all flex items-center justify-center gap-2" 
+        style={{ backgroundColor: themeColor }}
+      >
+        <Save className="w-4 h-4" /> Simpan Semua Target
+      </button>
     </div>
   );
 };
@@ -946,6 +646,8 @@ function App() {
     companyLng: null
   });
   
+  // Target Management State
+  const [userTargets, setUserTargets] = useState({});
   const [userPoints, setUserPoints] = useState({});
   const [leaderboard, setLeaderboard] = useState([]);
   const [userLocation, setUserLocation] = useState(null);
@@ -1612,6 +1314,24 @@ function App() {
       setMsg({ type: 'success', text: 'Pengaturan Lisensi Disimpan!' });
     } catch(e) { 
       setMsg({ type: 'error', text: 'Gagal menyimpan konfigurasi.' }); 
+      console.error(e); 
+    } finally { 
+      setActionLoading(false); 
+      setTimeout(() => setMsg(null), 3000); 
+    }
+  };
+
+  const handleSaveTargets = async () => {
+    setActionLoading(true);
+    try {
+      const targetsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'targets');
+      await setDoc(targetsRef, { 
+        userTargets,
+        updatedAt: serverTimestamp() 
+      });
+      setMsg({ type: 'success', text: 'Target karyawan disimpan!' });
+    } catch(e) { 
+      setMsg({ type: 'error', text: 'Gagal menyimpan target.' }); 
       console.error(e); 
     } finally { 
       setActionLoading(false); 
@@ -2434,6 +2154,20 @@ function App() {
     return () => unsubscribe();
   }, [user]);
 
+  // Load user targets
+  useEffect(() => {
+    if (!user) return;
+    
+    const targetsRef = doc(db, 'artifacts', appId, 'public', 'data', 'admin_config', 'targets');
+    const unsubscribe = onSnapshot(targetsRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setUserTargets(docSnap.data().userTargets || {});
+      }
+    });
+    
+    return () => unsubscribe();
+  }, [user]);
+
   // Load user points saat login
   useEffect(() => {
     if (selectedEmployee?.id) {
@@ -2851,6 +2585,52 @@ function App() {
                 </div>
               </div>
             </div>
+            
+            {/* Target Section in Dashboard */}
+            {selectedEmployee && userTargets[selectedEmployee.id] && userTargets[selectedEmployee.id].length > 0 && (
+              <div className="space-y-4">
+                <h3 className="font-black text-slate-900 tracking-tight flex items-center gap-2 text-xs uppercase px-2 text-left">
+                  <BarChart3 className="w-4 h-4" style={{ color: themeColor }} /> Target Kinerja
+                </h3>
+                <div className="space-y-3">
+                  {userTargets[selectedEmployee.id].map((target, idx) => {
+                    const progress = calculateTargetProgress(target.targetValue, target.currentValue);
+                    const status = getTargetStatus(target);
+                    const isExpired = status === 'expired';
+                    
+                    return (
+                      <div key={target.id || idx} className={`p-4 rounded-xl ${isExpired ? 'bg-red-50 border border-red-200' : 'bg-white border border-slate-100'} shadow-sm`}>
+                        <div className="flex justify-between items-start mb-2">
+                          <h4 className="text-sm font-bold text-slate-800">{target.title}</h4>
+                          <span className={`px-2 py-0.5 text-[9px] font-bold rounded-full ${isExpired ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+                            {getTargetTypeLabel(target.type)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-600 mb-3">{target.description}</p>
+                        <div className="space-y-2">
+                          <div className="flex justify-between text-[10px] font-bold">
+                            <span>Progress</span>
+                            <span>{progress}% ({target.currentValue}/{target.targetValue})</span>
+                          </div>
+                          <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                            <div 
+                              className={`h-full ${isExpired ? 'bg-red-500' : progress >= 100 ? 'bg-emerald-500' : 'bg-blue-500'} transition-all duration-500`}
+                              style={{ width: `${progress}%` }}
+                            ></div>
+                          </div>
+                          {target.deadline && target.type === TARGET_TYPES.CUSTOM_DATE && (
+                            <div className="text-[10px] text-slate-400 mt-1">
+                              Tenggat: {new Date(target.deadline).toLocaleDateString('id-ID')}
+                              {isExpired && <span className="text-red-500 font-bold ml-2">(Kadaluarsa)</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
             
             {(() => {
               const total = attendanceData.tasks.length;
@@ -3400,6 +3180,13 @@ function App() {
                 User
               </button>
               <button 
+                onClick={() => setConfigTab('targets')} 
+                className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'targets' ? 'bg-white shadow-sm' : 'text-slate-500'}`} 
+                style={configTab === 'targets' ? { color: themeColor } : {}}
+              >
+                Target
+              </button>
+              <button 
                 onClick={() => setConfigTab('license')} 
                 className={`flex-1 py-3 rounded-xl font-black text-[9px] uppercase transition-all ${configTab === 'license' ? 'bg-white shadow-sm' : 'text-slate-500'}`} 
                 style={configTab === 'license' ? { color: themeColor } : {}}
@@ -3896,6 +3683,17 @@ function App() {
                     ))}
                   </div>
                 </div>
+              )}
+
+              {configTab === 'targets' && (
+                <TargetSettings 
+                  employees={employees}
+                  userTargets={userTargets}
+                  setUserTargets={setUserTargets}
+                  handleSaveTargets={handleSaveTargets}
+                  actionLoading={actionLoading}
+                  themeColor={themeColor}
+                />
               )}
 
               {configTab === 'license' && (

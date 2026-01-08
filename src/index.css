@@ -2,51 +2,145 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root {
+    font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+    line-height: 1.5;
+    font-weight: 400;
+  }
 
-/* Warna Tema Default. 
-   Di React, ini dinamis menggunakan variabel ${themeColor}.
-   Anda bisa mengganti hex code ini sesuai keinginan.
-*/
-:root {
-  --theme-color: #059669; /* Emerald 600 */
+  body {
+    margin: 0;
+    min-width: 320px;
+    min-height: 100vh;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
 }
 
-/* --- Dynamic Theme Styles --- */
-
-/* Warna border saat elemen di-klik/fokus */
-.theme-focus:focus { 
-  border-color: var(--theme-color) !important; 
+/* Animations */
+@keyframes slide-in-from-bottom {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
 }
 
-/* Warna border parent saat child di-klik/fokus */
-.theme-focus-within:focus-within { 
-  border-color: var(--theme-color) !important; 
+@keyframes slide-in-from-right {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
-/* Warna teks saat di-hover */
-.theme-text-hover:hover { 
-  color: var(--theme-color) !important; 
+@keyframes slide-in-from-left {
+  from {
+    transform: translateX(-100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
 }
 
-/* Warna background & teks putih saat di-hover */
-.theme-bg-hover:hover { 
-  background-color: var(--theme-color) !important; 
-  color: white !important; 
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
-/* Warna border saat di-hover */
-.theme-border-hover:hover { 
-  border-color: var(--theme-color) !important; 
+@keyframes zoom-in {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
-/* --- Custom Scrollbar (Untuk daftar filter tanggal) --- */
-.custom-scrollbar::-webkit-scrollbar { 
-  height: 4px; 
+.animate-in {
+  animation-duration: 300ms;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
 }
-.custom-scrollbar::-webkit-scrollbar-track { 
-  background: transparent; 
+
+.slide-in-from-bottom-6 {
+  animation-name: slide-in-from-bottom;
 }
-.custom-scrollbar::-webkit-scrollbar-thumb { 
-  background-color: #cbd5e1; 
-  border-radius: 10px; 
+
+.slide-in-from-right-10 {
+  animation-name: slide-in-from-right;
+}
+
+.slide-in-from-left-6 {
+  animation-name: slide-in-from-left;
+}
+
+.fade-in {
+  animation-name: fade-in;
+}
+
+.zoom-in-95 {
+  animation-name: zoom-in;
+}
+
+/* Selection */
+::selection {
+  background-color: rgba(16, 185, 129, 0.2);
+  color: inherit;
+}
+
+/* Focus styles */
+:focus-visible {
+  outline: 2px solid #10b981;
+  outline-offset: 2px;
+}
+
+/* Disabled state */
+[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Hide spin buttons for number inputs */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
 }

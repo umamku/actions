@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+
+/* Warna Tema Default. 
+   Di React, ini dinamis menggunakan variabel ${themeColor}.
+   Anda bisa mengganti hex code ini sesuai keinginan.
+*/
+:root {
+  --theme-color: #059669; /* Emerald 600 */
+}
+
+/* --- Dynamic Theme Styles --- */
+
+/* Warna border saat elemen di-klik/fokus */
+.theme-focus:focus { 
+  border-color: var(--theme-color) !important; 
+}
+
+/* Warna border parent saat child di-klik/fokus */
+.theme-focus-within:focus-within { 
+  border-color: var(--theme-color) !important; 
+}
+
+/* Warna teks saat di-hover */
+.theme-text-hover:hover { 
+  color: var(--theme-color) !important; 
+}
+
+/* Warna background & teks putih saat di-hover */
+.theme-bg-hover:hover { 
+  background-color: var(--theme-color) !important; 
+  color: white !important; 
+}
+
+/* Warna border saat di-hover */
+.theme-border-hover:hover { 
+  border-color: var(--theme-color) !important; 
+}
+
+/* --- Custom Scrollbar (Untuk daftar filter tanggal) --- */
+.custom-scrollbar::-webkit-scrollbar { 
+  height: 4px; 
+}
+.custom-scrollbar::-webkit-scrollbar-track { 
+  background: transparent; 
+}
+.custom-scrollbar::-webkit-scrollbar-thumb { 
+  background-color: #cbd5e1; 
+  border-radius: 10px; 
+}
